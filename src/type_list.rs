@@ -1,0 +1,144 @@
+#[derive(Copy, Clone, Debug)]
+pub struct Value<A: Clone>(pub A);
+#[derive(Copy, Clone)]
+pub struct NoValue;
+
+impl<A, B> std::ops::Add for Value<(A,A)> where
+    A: std::ops::Add<Output=B> + Copy,
+    B: Clone
+{
+    type Output = Value<(B, B)>;
+    fn add(self, other: Self) -> Self::Output {
+        Value(((self.0).0+(other.0).0, (self.0).1+(other.0).0))
+    }
+}
+impl<A, B> std::ops::Mul for Value<(A,A)> where
+    A: std::ops::Mul<Output=B> + Copy,
+    B: Clone
+{
+    type Output = Value<(B, B)>;
+    fn mul(self, other: Self) -> Self::Output {
+        Value(((self.0).0*(other.0).0, (self.0).1*(other.0).0))
+    }
+}
+pub trait ValueT: Clone {
+    type Car: Clone;
+    type Cdr: Clone;
+    type Inner: Clone;
+    fn car(&self) -> &Self::Car;
+    fn cdr(&self) -> &Self::Cdr;
+    fn inner(&self) -> &Self::Inner;
+    fn map_car(self, f: impl Fn(Self::Car) -> Self::Car) -> Self;
+    fn from_inner(inner: Self::Inner) -> Self;
+}
+impl<A: Clone> ValueT for Value<(A,)> {
+    type Car = A;
+    type Cdr = NoValue;
+    type Inner = (A,);
+    fn car(&self) -> &Self::Car { &(self.0).0 }
+    fn map_car(self, f: impl Fn(Self::Car) -> Self::Car) -> Self {
+        Value((f((self.0).0),))
+    }
+    fn inner(&self) -> &Self::Inner { &self.0 }
+    fn cdr(&self) -> &Self::Cdr { &NoValue }
+    fn from_inner(inner: Self::Inner) -> Self {
+        Value(inner)
+    }
+}
+impl<A: Clone, B: Clone> ValueT for Value<(A, B)> {
+    type Car = A;
+    type Cdr = B;
+    type Inner = (A, B);
+    fn car(&self) -> &Self::Car { &(self.0).0 }
+    fn cdr(&self) -> &Self::Cdr { &(self.0).1 }
+    fn inner(&self) -> &Self::Inner { &self.0 }
+    fn map_car(self, f: impl Fn(Self::Car) -> Self::Car) -> Self {
+        Value((f((self.0).0), (self.0).1))
+    }
+    fn from_inner(inner: Self::Inner) -> Self {
+        Value(inner)
+    }
+}
+impl ValueT for NoValue {
+    type Car = NoValue;
+    type Cdr = NoValue;
+    type Inner = NoValue;
+    fn car(&self) -> &NoValue { &NoValue }
+    fn map_car(self, _f: impl Fn(Self::Car) -> Self::Car) -> Self {
+        NoValue
+    }
+    fn inner(&self) -> &Self::Inner { &NoValue }
+    fn cdr(&self) -> &NoValue { &NoValue }
+    fn from_inner(inner: Self::Inner) -> Self {
+        NoValue
+    }
+}
+
+pub trait Combine<A, B> {
+    type Output: ValueT;
+    fn combine(a: A, b: B) -> Self::Output;
+    fn split(v: Self::Output) -> (A, B);
+}
+impl<A: Clone> Combine<Value<(A,)>, NoValue> for (Value<(A,)>, NoValue) {
+    type Output = Value<(A,)>;
+    fn combine(a: Value<(A,)>, _b: NoValue) -> Self::Output {
+        a
+    }
+    fn split(v: Value<(A,)>) -> (Value<(A,)>, NoValue) {
+        (v, NoValue)
+    }
+}
+impl<A:Copy> Combine<NoValue, Value<(A,)>> for (NoValue, Value<(A,)>) {
+    type Output = Value<(A,)>;
+    fn combine(_a: NoValue, b: Value<(A,)>) -> Self::Output {
+        b
+    }
+    fn split(v: Value<(A,)>) -> (NoValue, Value<(A,)>) {
+        (NoValue, v)
+    }
+}
+impl<A: Clone, B: Clone> Combine<Value<(A,)>, Value<(B,)>> for (Value<(A,)>, Value<(B,)>) {
+    type Output = Value<(A, B)>;
+    fn combine(a: Value<(A,)>, b: Value<(B,)>) -> Self::Output {
+        Value(((a.0).0, (b.0).0))
+    }
+    fn split(v: Value<(A, B)>) -> (Value<(A,)>, Value<(B,)>) {
+        (Value(((v.0).0,)), Value(((v.0).1,)))
+    }
+}
+impl<A: Clone, B: Clone, C: Clone> Combine<Value<(A,B)>, Value<(C,)>> for (Value<(A,B)>, Value<(C,)>) {
+    type Output = Value<((A, B), C)>;
+    fn combine(a: Value<(A,B)>, b: Value<(C,)>) -> Self::Output {
+        Value((a.0, (b.0).0))
+    }
+    fn split(v: Value<((A, B), C)>) -> (Value<(A,B)>, Value<(C,)>) {
+        (Value((v.0).0), Value(((v.0).1,)))
+    }
+}
+impl<A: Clone, B: Clone, C: Clone> Combine<Value<(A,)>, Value<(B,C)>> for (Value<(A,)>, Value<(B,C)>) {
+    type Output = Value<(A, (B, C))>;
+    fn combine(a: Value<(A,)>, b: Value<(B,C)>) -> Self::Output {
+        Value(((a.0).0, b.0))
+    }
+    fn split(v: Value<(A, (B, C))>) -> (Value<(A,)>, Value<(B,C)>) {
+        (Value(((v.0).0,)), Value((v.0).1))
+    }
+}
+impl<A: Clone, B: Clone> Combine<Value<(A,A)>, Value<(B,B)>> for (Value<(A,A)>, Value<(B,B)>) {
+    type Output = Value<((A, A), (B, B))>;
+    fn combine(a: Value<(A,A)>, b: Value<(B,B)>) -> Self::Output {
+        Value((a.0, b.0))
+    }
+    fn split(v: Value<((A,A), (B,B))>) -> (Value<(A,A)>, Value<(B,B)>) {
+        (Value((v.0).0), Value((v.0).1))
+    }
+}
+impl Combine<NoValue, NoValue> for (NoValue, NoValue) {
+    type Output = NoValue;
+    fn combine(a: NoValue, b: NoValue) -> Self::Output {
+        NoValue
+    }
+    fn split(v: NoValue) -> (NoValue, NoValue) {
+        (NoValue, NoValue)
+    }
+}

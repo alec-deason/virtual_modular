@@ -1,0 +1,24 @@
+[package]
+name = "instruments"
+version = "0.1.0"
+authors = ["Alec Deason <alec@tinycountry.com>"]
+edition = "2018"
+
+[features]
+instrument = []
+effect = []
+
+[dependencies]
+rand = "0.8.3"
+dyn-clone = "1.0.4"
+serde = "1.0.126"
+ron = "0.6.4"
+packed_simd_2 = "0.3.5"
+rust-embed = "5.9.0"
+svg_modulation = { path = "../../svg_modulation" }
+
+[dev-dependencies]
+cpal = "0.13"
+
+#[profile.release]
+# debug = true
