@@ -1,24 +1,42 @@
+use packed_simd_2::f32x8;
 #[derive(Copy, Clone, Debug)]
 pub struct Value<A: Clone>(pub A);
 #[derive(Copy, Clone)]
 pub struct NoValue;
 
-impl<A, B> std::ops::Add for Value<(A,A)> where
-    A: std::ops::Add<Output=B> + Copy,
-    B: Clone
+impl<A, B> std::ops::Add for Value<(A, A)>
+where
+    A: std::ops::Add<Output = B> + Copy,
+    B: Clone,
 {
     type Output = Value<(B, B)>;
     fn add(self, other: Self) -> Self::Output {
-        Value(((self.0).0+(other.0).0, (self.0).1+(other.0).0))
+        Value(((self.0).0 + (other.0).0, (self.0).1 + (other.0).0))
     }
 }
-impl<A, B> std::ops::Mul for Value<(A,A)> where
-    A: std::ops::Mul<Output=B> + Copy,
-    B: Clone
+impl<A, B> std::ops::Mul for Value<(A, A)>
+where
+    A: std::ops::Mul<Output = B> + Copy,
+    B: Clone,
 {
     type Output = Value<(B, B)>;
     fn mul(self, other: Self) -> Self::Output {
-        Value(((self.0).0*(other.0).0, (self.0).1*(other.0).0))
+        Value(((self.0).0 * (other.0).0, (self.0).1 * (other.0).0))
+    }
+}
+impl<A> std::ops::Mul<A> for Value<(A, A)>
+where
+    A: std::ops::Mul<Output = A> + Copy,
+{
+    type Output = Value<(A, A)>;
+    fn mul(self, other: A) -> Self::Output {
+        Value(((self.0).0 * other, (self.0).1 * other))
+    }
+}
+impl std::ops::Mul<f32> for Value<(f32x8, f32x8)> {
+    type Output = Value<(f32x8, f32x8)>;
+    fn mul(self, other: f32) -> Self::Output {
+        Value(((self.0).0 * other, (self.0).1 * other))
     }
 }
 pub trait ValueT: Clone {
@@ -35,12 +53,18 @@ impl<A: Clone> ValueT for Value<(A,)> {
     type Car = A;
     type Cdr = NoValue;
     type Inner = (A,);
-    fn car(&self) -> &Self::Car { &(self.0).0 }
+    fn car(&self) -> &Self::Car {
+        &(self.0).0
+    }
     fn map_car(self, f: impl Fn(Self::Car) -> Self::Car) -> Self {
         Value((f((self.0).0),))
     }
-    fn inner(&self) -> &Self::Inner { &self.0 }
-    fn cdr(&self) -> &Self::Cdr { &NoValue }
+    fn inner(&self) -> &Self::Inner {
+        &self.0
+    }
+    fn cdr(&self) -> &Self::Cdr {
+        &NoValue
+    }
     fn from_inner(inner: Self::Inner) -> Self {
         Value(inner)
     }
@@ -49,9 +73,15 @@ impl<A: Clone, B: Clone> ValueT for Value<(A, B)> {
     type Car = A;
     type Cdr = B;
     type Inner = (A, B);
-    fn car(&self) -> &Self::Car { &(self.0).0 }
-    fn cdr(&self) -> &Self::Cdr { &(self.0).1 }
-    fn inner(&self) -> &Self::Inner { &self.0 }
+    fn car(&self) -> &Self::Car {
+        &(self.0).0
+    }
+    fn cdr(&self) -> &Self::Cdr {
+        &(self.0).1
+    }
+    fn inner(&self) -> &Self::Inner {
+        &self.0
+    }
     fn map_car(self, f: impl Fn(Self::Car) -> Self::Car) -> Self {
         Value((f((self.0).0), (self.0).1))
     }
@@ -63,12 +93,18 @@ impl ValueT for NoValue {
     type Car = NoValue;
     type Cdr = NoValue;
     type Inner = NoValue;
-    fn car(&self) -> &NoValue { &NoValue }
+    fn car(&self) -> &NoValue {
+        &NoValue
+    }
     fn map_car(self, _f: impl Fn(Self::Car) -> Self::Car) -> Self {
         NoValue
     }
-    fn inner(&self) -> &Self::Inner { &NoValue }
-    fn cdr(&self) -> &NoValue { &NoValue }
+    fn inner(&self) -> &Self::Inner {
+        &NoValue
+    }
+    fn cdr(&self) -> &NoValue {
+        &NoValue
+    }
     fn from_inner(inner: Self::Inner) -> Self {
         NoValue
     }
@@ -88,7 +124,7 @@ impl<A: Clone> Combine<Value<(A,)>, NoValue> for (Value<(A,)>, NoValue) {
         (v, NoValue)
     }
 }
-impl<A:Copy> Combine<NoValue, Value<(A,)>> for (NoValue, Value<(A,)>) {
+impl<A: Copy> Combine<NoValue, Value<(A,)>> for (NoValue, Value<(A,)>) {
     type Output = Value<(A,)>;
     fn combine(_a: NoValue, b: Value<(A,)>) -> Self::Output {
         b
@@ -106,30 +142,34 @@ impl<A: Clone, B: Clone> Combine<Value<(A,)>, Value<(B,)>> for (Value<(A,)>, Val
         (Value(((v.0).0,)), Value(((v.0).1,)))
     }
 }
-impl<A: Clone, B: Clone, C: Clone> Combine<Value<(A,B)>, Value<(C,)>> for (Value<(A,B)>, Value<(C,)>) {
+impl<A: Clone, B: Clone, C: Clone> Combine<Value<(A, B)>, Value<(C,)>>
+    for (Value<(A, B)>, Value<(C,)>)
+{
     type Output = Value<((A, B), C)>;
-    fn combine(a: Value<(A,B)>, b: Value<(C,)>) -> Self::Output {
+    fn combine(a: Value<(A, B)>, b: Value<(C,)>) -> Self::Output {
         Value((a.0, (b.0).0))
     }
-    fn split(v: Value<((A, B), C)>) -> (Value<(A,B)>, Value<(C,)>) {
+    fn split(v: Value<((A, B), C)>) -> (Value<(A, B)>, Value<(C,)>) {
         (Value((v.0).0), Value(((v.0).1,)))
     }
 }
-impl<A: Clone, B: Clone, C: Clone> Combine<Value<(A,)>, Value<(B,C)>> for (Value<(A,)>, Value<(B,C)>) {
+impl<A: Clone, B: Clone, C: Clone> Combine<Value<(A,)>, Value<(B, C)>>
+    for (Value<(A,)>, Value<(B, C)>)
+{
     type Output = Value<(A, (B, C))>;
-    fn combine(a: Value<(A,)>, b: Value<(B,C)>) -> Self::Output {
+    fn combine(a: Value<(A,)>, b: Value<(B, C)>) -> Self::Output {
         Value(((a.0).0, b.0))
     }
-    fn split(v: Value<(A, (B, C))>) -> (Value<(A,)>, Value<(B,C)>) {
+    fn split(v: Value<(A, (B, C))>) -> (Value<(A,)>, Value<(B, C)>) {
         (Value(((v.0).0,)), Value((v.0).1))
     }
 }
-impl<A: Clone, B: Clone> Combine<Value<(A,A)>, Value<(B,B)>> for (Value<(A,A)>, Value<(B,B)>) {
+impl<A: Clone, B: Clone> Combine<Value<(A, A)>, Value<(B, B)>> for (Value<(A, A)>, Value<(B, B)>) {
     type Output = Value<((A, A), (B, B))>;
-    fn combine(a: Value<(A,A)>, b: Value<(B,B)>) -> Self::Output {
+    fn combine(a: Value<(A, A)>, b: Value<(B, B)>) -> Self::Output {
         Value((a.0, b.0))
     }
-    fn split(v: Value<((A,A), (B,B))>) -> (Value<(A,A)>, Value<(B,B)>) {
+    fn split(v: Value<((A, A), (B, B))>) -> (Value<(A, A)>, Value<(B, B)>) {
         (Value((v.0).0), Value((v.0).1))
     }
 }

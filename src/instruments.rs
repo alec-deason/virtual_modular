@@ -1,9 +1,10 @@
-use rand::prelude::*;
-use packed_simd_2::f32x8;
 use crate::{
-    type_list::{Value, NoValue, ValueT, Combine},
     simd_graph::*,
+    type_list::{Combine, NoValue, Value, ValueT},
 };
+use inline_tweak::tweak;
+use packed_simd_2::f32x8;
+use rand::prelude::*;
 
 macro_rules! routing {
     ($struct_name:ident, $($field_name:ident:$value_type:ty),* $(,)*) => {
@@ -37,10 +38,10 @@ routing! {
 
 #[derive(Clone)]
 pub struct Bass {
-    output: Box<dyn Node<Input=Value<(f32x8, f32x8)>, Output=Value<(f32x8, f32x8)>>>,
+    output: Box<dyn Node<Input = Value<(f32x8, f32x8)>, Output = Value<(f32x8, f32x8)>>>,
     pitch: f32,
-    pub routing: BassRouting,
     triggered: bool,
+    pub routing: BassRouting,
 }
 impl Default for Bass {
     fn default() -> Self {
@@ -49,60 +50,69 @@ impl Default for Bass {
             pitch: Box::new(Constant(f32x8::splat(0.0))),
         };
 
-        let pop = Pipe(curry(Constant(f32x8::splat(2.0)), Mul::default()), Pipe(curry(Pipe(Constant(f32x8::splat(20.0)), Pipe(WaveTable::noise(), Rescale(0.0, 1.0))), Mul::default()), WaveTable::sine()));
+        let pop = Pipe(
+            curry(Constant(f32x8::splat(2.0)), Mul::default()),
+            Pipe(
+                curry(
+                    Pipe(
+                        Constant(f32x8::splat(20.0)),
+                        Pipe(WaveTable::noise(), Rescale(0.0, 1.0)),
+                    ),
+                    Mul::default(),
+                ),
+                WaveTable::sine(),
+            ),
+        );
 
         let decay_freq = Pipe(
             Pipe(
                 curry(Constant(f32x8::splat(0.5)), Mul::default()),
                 Branch::new(
                     Pass::default(),
-                    Pipe(WaveTable::positive_sine(), Rescale(0.25, 1.0))
-                )
+                    Pipe(WaveTable::positive_sine(), Rescale(0.25, 1.0)),
+                ),
             ),
-            Mul::default()
+            Mul::default(),
         );
         let decay = Pipe(decay_freq, WaveTable::sine());
 
         let mut v = 0.0;
-        let f = move |t: f32, off_time:Option<f32>| {
+        let f = move |t: f32, off_time: Option<f32>| {
             let attack = 0.025;
-            let release= 0.08;
+            let release = 0.08;
             let sustain = 0.25;
             let sustain_time = 8.0;
             let decay = 0.1;
             let new_v = if t < attack {
-                (t/attack).min(1.0)
-            } else if t < attack+decay {
-                let t = t - attack ;
-                let t = 1.0 - (t/decay).min(1.0);
-                t + (1.0-t)*sustain
-            } else if t < attack+decay+sustain_time {
+                (t / attack).min(1.0)
+            } else if t < attack + decay {
+                let t = t - attack;
+                let t = 1.0 - (t / decay).min(1.0);
+                t + (1.0 - t) * sustain
+            } else if t < attack + decay + sustain_time {
                 sustain
             } else {
-                let t = t - (attack+decay+sustain_time);
-                sustain - (t/release).min(1.0)*sustain
+                let t = t - (attack + decay + sustain_time);
+                sustain - (t / release).min(1.0) * sustain
             };
-            v = v*0.9 + new_v*0.1;
+            v = v * 0.9 + new_v * 0.1;
             v
         };
         let envelope = ThreshEnvelope::new(f);
+        let decay = Pipe(Stack::new(envelope, decay), Mul::default());
         let decay = Pipe(
-            Stack::new(
-                envelope,
-                decay
-            ),
-            Mul::default()
+            Pipe(decay, curry(Constant(f32x8::splat(0.3)), Mul::default())),
+            Split,
         );
-        let decay = Pipe(Pipe(decay, curry(Constant(f32x8::splat(0.3)), Mul::default())), Split);
 
-        let f = move |t: f32, off_time:Option<f32>| {
+        let f = move |t: f32, off_time: Option<f32>| {
             let attack = 0.025;
-            let release= 0.025;
+            let release = 0.025;
             if t < attack {
-                (t/attack).min(1.0)
+                (t / attack).min(1.0)
             } else {
-                let t = t - attack ;
-                1.0 - (t/release).min(1.0)
+                let t = t - attack;
+                1.0 - (t / release).min(1.0)
             }
         };
         let envelope = ThreshEnvelope::new(f);
@@ -110,14 +120,12 @@ impl Default for Bass {
         let pop = Pipe(
             Stack::new(
                 envelope,
-                Pipe(pop, curry(Constant(f32x8::splat(0.01)), Mul::default()))
+                Pipe(pop, curry(Constant(f32x8::splat(0.01)), Mul::default())),
             ),
-            Mul::default()
+            Mul::default(),
         );
         let pop = Pipe(pop, Split);
         let output = Pipe(Branch::new(pop, decay), Mix);
-
-
 
         Self {
             routing,
@@ -142,7 +150,8 @@ impl Node for Bass {
         } else if gate_max < 0.5 {
             self.triggered = false;
         }
-        self.output.process(Value((*gate.car(), f32x8::splat(self.pitch))))
+        self.output
+            .process(Value((*gate.car(), f32x8::splat(self.pitch))))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -159,7 +168,7 @@ routing! {
 
 #[derive(Clone)]
 pub struct Lead {
-    output: Box<dyn Node<Input=Value<(f32x8, f32x8)>, Output=Value<(f32x8, f32x8)>>>,
+    output: Box<dyn Node<Input = Value<(f32x8, f32x8)>, Output = Value<(f32x8, f32x8)>>>,
     pitch: f32,
     pub routing: LeadRouting,
     triggered: bool,
@@ -172,47 +181,56 @@ impl Default for Lead {
         };
 
         let mut v = 0.0;
-        let f = move |t: f32, off_time:Option<f32>| {
+        let f = move |t: f32, off_time: Option<f32>| {
             let attack = 0.025;
-            let release= 0.08;
+            let release = 0.08;
             let sustain = 0.25;
             let sustain_time = 8.0;
             let decay = 0.1;
             let new_v = if t < attack {
-                (t/attack).min(1.0)
-            } else if t < attack+decay {
-                let t = t - attack ;
-                let t = 1.0 - (t/decay).min(1.0);
-                t + (1.0-t)*sustain
-            } else if t < attack+decay+sustain_time {
+                (t / attack).min(1.0)
+            } else if t < attack + decay {
+                let t = t - attack;
+                let t = 1.0 - (t / decay).min(1.0);
+                t + (1.0 - t) * sustain
+            } else if t < attack + decay + sustain_time {
                 sustain
             } else {
-                let t = t - (attack+decay+sustain_time);
-                sustain - (t/release).min(1.0)*sustain
+                let t = t - (attack + decay + sustain_time);
+                sustain - (t / release).min(1.0) * sustain
             };
-            v = v*0.9 + new_v*0.1;
+            v = v * 0.9 + new_v * 0.1;
             v
         };
         let envelope = ThreshEnvelope::new(f);
-        let filter = curry(Branch::new(Constant(f32x8::splat(800.0)), Constant(f32x8::splat(1.0))), Biquad::lowpass());
+        let filter = curry(
+            Branch::new(Constant(f32x8::splat(800.0)), Constant(f32x8::splat(1.0))),
+            Biquad::lowpass(),
+        );
         let output = Pipe(
             Stack::new(
                 envelope,
                 Pipe(
                     Branch::new(
                         Pipe(
-                            Pipe(WaveTable::square(), curry(Constant(f32x8::splat(0.05)), Mul::default())),
-                            filter
+                            Pipe(
+                                WaveTable::square(),
+                                curry(Constant(f32x8::splat(0.05)), Mul::default()),
+                            ),
+                            filter,
                         ),
                         Pipe(
                             curry(Constant(f32x8::splat(0.25)), Mul::default()),
-                            Pipe(WaveTable::sine(), curry(Constant(f32x8::splat(0.05)), Mul::default())),
+                            Pipe(
+                                WaveTable::sine(),
+                                curry(Constant(f32x8::splat(0.05)), Mul::default()),
+                            ),
                         ),
                     ),
-                    Add::default()
-                )
+                    Add::default(),
+                ),
             ),
-            Mul::default()
+            Mul::default(),
         );
         let output = Pipe(output, Split);
 
@@ -222,7 +240,6 @@ impl Default for Lead {
             pitch: 440.0,
             triggered: false,
         }
-
     }
 }
 
@@ -240,7 +257,8 @@ impl Node for Lead {
         } else if gate_max < 0.5 {
             self.triggered = false;
         }
-        self.output.process(Value((*gate.car(), f32x8::splat(self.pitch))))
+        self.output
+            .process(Value((*gate.car(), f32x8::splat(self.pitch))))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -251,7 +269,7 @@ impl Node for Lead {
 
 #[derive(Clone)]
 pub struct Lead2 {
-    output: Box<dyn Node<Input=Value<(f32x8, f32x8)>, Output=Value<(f32x8, f32x8)>>>,
+    output: Box<dyn Node<Input = Value<(f32x8, f32x8)>, Output = Value<(f32x8, f32x8)>>>,
     pitch: f32,
     pub routing: LeadRouting,
     triggered: bool,
@@ -264,34 +282,37 @@ impl Default for Lead2 {
         };
 
         let mut v = 0.0;
-        let f = move |t: f32, off_time:Option<f32>| {
+        let f = move |t: f32, off_time: Option<f32>| {
             let attack = 0.025;
-            let release= 0.08;
+            let release = 0.08;
             let sustain = 0.25;
             let sustain_time = 8.0;
             let decay = 0.1;
             let new_v = if t < attack {
-                (t/attack).min(1.0)
-            } else if t < attack+decay {
-                let t = t - attack ;
-                let t = 1.0 - (t/decay).min(1.0);
-                t + (1.0-t)*sustain
-            } else if t < attack+decay+sustain_time {
+                (t / attack).min(1.0)
+            } else if t < attack + decay {
+                let t = t - attack;
+                let t = 1.0 - (t / decay).min(1.0);
+                t + (1.0 - t) * sustain
+            } else if t < attack + decay + sustain_time {
                 sustain
             } else {
-                let t = t - (attack+decay+sustain_time);
-                sustain - (t/release).min(1.0)*sustain
+                let t = t - (attack + decay + sustain_time);
+                sustain - (t / release).min(1.0) * sustain
             };
-            v = v*0.9 + new_v*0.1;
+            v = v * 0.9 + new_v * 0.1;
             v
         };
         let envelope = ThreshEnvelope::new(f);
         let output = Pipe(
             Stack::new(
                 envelope,
-                Pipe(WaveTable::sine(), curry(Constant(f32x8::splat(0.5)), Mul::default())),
+                Pipe(
+                    WaveTable::sine(),
+                    curry(Constant(f32x8::splat(0.5)), Mul::default()),
+                ),
             ),
-            Mul::default()
+            Mul::default(),
         );
         let output = Pipe(output, Split);
 
@@ -301,7 +322,6 @@ impl Default for Lead2 {
             pitch: 440.0,
             triggered: false,
         }
-
     }
 }
 
@@ -319,7 +339,8 @@ impl Node for Lead2 {
         } else if gate_max < 0.5 {
             self.triggered = false;
         }
-        self.output.process(Value((*gate.car(), f32x8::splat(self.pitch))))
+        self.output
+            .process(Value((*gate.car(), f32x8::splat(self.pitch))))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -328,84 +349,78 @@ impl Node for Lead2 {
     }
 }
 
-pub fn lead() -> impl Node<Input=Value<(f32x8, f32x8)>, Output=Value<(f32x8, f32x8)>> + Clone {
-    let f = move |t: f32, off_time:Option<f32>| {
+pub fn lead() -> impl Node<Input = Value<(f32x8, f32x8)>, Output = Value<(f32x8, f32x8)>> + Clone {
+    let f = move |t: f32, off_time: Option<f32>| {
         let new_v = if let Some(off_time) = off_time {
-            let release= 0.05;
+            let release = 0.05;
             let t = t - off_time;
-            1.0 - (t/release).min(1.0)
+            1.0 - (t / release).min(1.0)
         } else {
             let attack = 0.2;
-            (t/attack).min(1.0)
+            (t / attack).min(1.0)
         };
         new_v
     };
-    let filter_envelope = Pipe(ThreshEnvelope::new(f), curry(Constant(f32x8::splat(1400.0)), Mul::default()));
-    let filter = curry(Stack::new(filter_envelope, Constant(f32x8::splat(1.0))), Biquad::lowpass());
-    let osc1 = Pipe(
-        Branch::new(
-            Pass::default(),
-            WaveTable::saw()
-        ),
-        filter
+    let filter_envelope = Pipe(
+        ThreshEnvelope::new(f),
+        curry(Constant(f32x8::splat(1400.0)), Mul::default()),
     );
+    let filter = curry(
+        Stack::new(filter_envelope, Constant(f32x8::splat(1.0))),
+        Biquad::lowpass(),
+    );
+    let osc1 = Pipe(Branch::new(Pass::default(), WaveTable::saw()), filter);
     let mut v = 0.0;
-    let f = move |t: f32, off_time:Option<f32>| {
+    let f = move |t: f32, off_time: Option<f32>| {
         let new_v = if let Some(off_time) = off_time {
-            let release= 0.3;
+            let release = 0.3;
             let t = t - off_time;
-            1.0 - (t/release).min(1.0)
+            1.0 - (t / release).min(1.0)
         } else {
             let attack = 0.2;
-            (t/attack).min(1.0)
+            (t / attack).min(1.0)
         };
         v = (v * 0.9) + (new_v * 0.1);
         v
     };
     let envelope = ThreshEnvelope::new(f);
     let envelope = Pipe(Flip::default(), curry(envelope, Mul::default()));
-    let voice = curry(
-        osc1,
-        envelope
-    );
+    let voice = curry(osc1, envelope);
     let voice = Pipe(
         voice,
-        curry(Stack::new(Constant(f32x8::splat(1000.0)), Constant(f32x8::splat(1.0))), Biquad::lowpass())
+        curry(
+            Stack::new(Constant(f32x8::splat(1000.0)), Constant(f32x8::splat(1.0))),
+            Biquad::lowpass(),
+        ),
     );
     Pipe(
-        Unison::new(
-            voice,
-            3.0, 1.0, 9
-        ),
+        Unison::new(voice, 3.0, 1.0, 9),
         Stack::new(
             curry(Constant(f32x8::splat(0.025)), Mul::default()),
             curry(Constant(f32x8::splat(0.025)), Mul::default()),
-        )
+        ),
     )
 }
 
-pub fn drum() -> impl Node<Input=Value<(f32x8,)>, Output=Value<(f32x8, f32x8)>> + Clone {
+pub fn drum() -> impl Node<Input = Value<(f32x8,)>, Output = Value<(f32x8, f32x8)>> + Clone {
     Pipe(
         Pipe(
-            Stack::new(
-                Impulse::default(),
-                Constant(f32x8::splat(400.0))
-            ),
+            Stack::new(Impulse::default(), Constant(f32x8::splat(400.0))),
             HarmonicOscillator::new(2.0),
         ),
-    Split
+        Split,
     )
 }
 
-pub fn snare() -> impl Node<Input=Value<(f32x8,)>, Output=Value<(f32x8, f32x8)>> + Clone{
-    let f = move |t: f32, off_time:Option<f32>| {
+pub fn snare() -> impl Node<Input = Value<(f32x8,)>, Output = Value<(f32x8, f32x8)>> + Clone {
+    let f = move |t: f32, off_time: Option<f32>| {
         let new_v = if let Some(off_time) = off_time {
-            let release= 0.005;
+            let release = 0.005;
             let t = t - off_time;
-            1.0 - (t.powf(0.15)/release).min(1.0)
+            1.0 - (t.powf(0.15) / release).min(1.0)
         } else {
             let attack = 0.005;
-            (t.powf(0.15)/attack).min(1.0)
+            (t.powf(0.15) / attack).min(1.0)
         };
         new_v
     };
@@ -414,53 +429,44 @@ pub fn snare() -> impl Node<Input=Value<(f32x8,)>, Output=Value<(f32x8, f32x8)>>
     let noise = Pipe(Constant(f32x8::splat(880.0)), WaveTable::noise());
     let noise = curry(
         Pipe(noise, curry(Constant(f32x8::splat(0.25)), Mul::default())),
-        envelope
+        envelope,
     );
     Pipe(
         Pipe(
             Pipe(
                 Branch::new(
                     Pipe(
-                        Stack::new(
-                            Impulse::default(),
-                            Constant(f32x8::splat(600.0))
-                        ),
+                        Stack::new(Impulse::default(), Constant(f32x8::splat(600.0))),
                         HarmonicOscillator::new(2.0),
                     ),
-                    noise
+                    noise,
                 ),
-                Add::default()
+                Add::default(),
             ),
             curry(
                 Stack::new(Constant(f32x8::splat(1800.0)), Constant(f32x8::splat(1.0))),
                 Biquad::lowpass(),
-            )
+            ),
         ),
-        Split
+        Split,
     )
 }
-pub fn clave() -> impl Node<Input=Value<(f32x8,)>, Output=Value<(f32x8, f32x8)>> + Clone {
+pub fn clave() -> impl Node<Input = Value<(f32x8,)>, Output = Value<(f32x8, f32x8)>> + Clone {
     Pipe(
         Pipe(
-            Stack::new(
-                Impulse::default(),
-                Constant(f32x8::splat(900.0))
-            ),
+            Stack::new(Impulse::default(), Constant(f32x8::splat(900.0))),
             HarmonicOscillator::new(1.0),
         ),
-    Split
+        Split,
     )
 }
-pub fn clave2() -> impl Node<Input=Value<(f32x8,)>, Output=Value<(f32x8, f32x8)>> + Clone {
+pub fn clave2() -> impl Node<Input = Value<(f32x8,)>, Output = Value<(f32x8, f32x8)>> + Clone {
     Pipe(
         Pipe(
-            Stack::new(
-                Impulse::default(),
-                Constant(f32x8::splat(2000.0))
-            ),
+            Stack::new(Impulse::default(), Constant(f32x8::splat(2000.0))),
             HarmonicOscillator::new(1.0),
         ),
-    Split
+        Split,
     )
 }
 
@@ -526,9 +532,7 @@ impl Default for Scale {
                 1.0594630943592953f32.powi(10),
             ])),
         };
-        Self {
-            routing,
-        }
+        Self { routing }
     }
 }
 
@@ -560,7 +564,7 @@ routing! {
 
 #[derive(Clone)]
 pub struct Pad {
-    output: Box<dyn Node<Input=Value<(f32x8, f32x8)>, Output=Value<(f32x8, f32x8)>>>,
+    output: Box<dyn Node<Input = Value<(f32x8, f32x8)>, Output = Value<(f32x8, f32x8)>>>,
     pub routing: PadRouting,
 }
 impl Default for Pad {
@@ -570,43 +574,84 @@ impl Default for Pad {
             pitch: Box::new(Constant(f32x8::splat(0.0))),
         };
 
-        let lfo1 = Pipe(Pipe(Constant(7.0), LfoSine::positive()), Rescale(0.8, 1.0));
-        let lfo2 = Pipe(Pipe(Constant(8.5), LfoSine::positive()), Rescale(0.8, 1.0));
-        let lfo3 = Pipe(Pipe(Constant(2.3), LfoSine::positive()), Rescale(0.5, 1.0));
+        let lfo1 = Pipe(
+            Pipe(Constant(7.0), LfoSine::positive_random_phase()),
+            Rescale(0.8, 1.0),
+        );
+        let lfo2 = Pipe(
+            Pipe(Constant(8.5), LfoSine::positive_random_phase()),
+            Rescale(0.8, 1.0),
+        );
+        let lfo3 = Pipe(
+            Pipe(Constant(2.3), LfoSine::positive_random_phase()),
+            Rescale(0.5, 1.0),
+        );
 
-        let lfo4 = Pipe(Pipe(Constant(8.2), LfoSine::positive()), Rescale(0.98, 1.02));
-        let lfo5 = Pipe(Pipe(Constant(7.5), LfoSine::positive()), Rescale(0.98, 1.02));
-        let lfo6 = Pipe(Pipe(Constant(1.3), LfoSine::positive()), Rescale(0.98, 1.02));
+        let lfo4 = Pipe(
+            Pipe(Constant(8.2), LfoSine::positive_random_phase()),
+            Rescale(0.98, 1.02),
+        );
+        let lfo5 = Pipe(
+            Pipe(Constant(7.5), LfoSine::positive_random_phase()),
+            Rescale(0.98, 1.02),
+        );
+        let lfo6 = Pipe(
+            Pipe(Constant(1.3), LfoSine::positive_random_phase()),
+            Rescale(0.98, 1.02),
+        );
 
         let osc1 = Pipe(
+            Pipe(
+                curry(lfo4, Mul::default()),
                 Pipe(
-                    curry(lfo4, Mul::default()),
-                    Pipe(
-                        Pipe(WaveTable::square(), curry(lfo1, Mul::default())),
-                        curry(Stack::new(Constant(f32x8::splat(400.0)), Constant(f32x8::splat(1.0))), Biquad::lowpass())
-                    )
+                    Pipe(WaveTable::square(), curry(lfo1, Mul::default())),
+                    curry(
+                        Stack::new(Constant(f32x8::splat(400.0)), Constant(f32x8::splat(1.0))),
+                        Biquad::lowpass(),
+                    ),
                 ),
-                Split
+            ),
+            Split,
         );
-        let osc2 = Pipe(Pipe(Pipe(
-            Pipe(curry(lfo5, Mul::default()), curry(Constant(f32x8::splat(Scale::major_third())), Mul::default())),
-            WaveTable::sine(),
-        ), curry(lfo2, Mul::default())), Split);
-        let osc3 = Pipe(Pipe(Pipe(
-            Pipe(curry(lfo6, Mul::default()), curry(Constant(f32x8::splat(Scale::perfect_fifth())), Mul::default())),
-            WaveTable::sine(),
-        ), curry(lfo3, Mul::default())), Split);
+        let osc2 = Pipe(
+            Pipe(
+                Pipe(
+                    Pipe(
+                        curry(lfo5, Mul::default()),
+                        curry(Constant(f32x8::splat(Scale::major_third())), Mul::default()),
+                    ),
+                    WaveTable::sine(),
+                ),
+                curry(lfo2, Mul::default()),
+            ),
+            Split,
+        );
+        let osc3 = Pipe(
+            Pipe(
+                Pipe(
+                    Pipe(
+                        curry(lfo6, Mul::default()),
+                        curry(
+                            Constant(f32x8::splat(Scale::perfect_fifth())),
+                            Mul::default(),
+                        ),
+                    ),
+                    WaveTable::sine(),
+                ),
+                curry(lfo3, Mul::default()),
+            ),
+            Split,
+        );
 
-
-       let mut v = 0.0;
-        let f = move |t: f32, off_time:Option<f32>| {
+        let mut v = 0.0;
+        let f = move |t: f32, off_time: Option<f32>| {
             let new_v = if let Some(off_time) = off_time {
-                let release= 1.5;
+                let release = 1.5;
                 let t = t - off_time;
-                1.0 - (t/release).min(1.0)
+                1.0 - (t / release).min(1.0)
             } else {
                 let attack = 1.0;
-                (t/attack).min(1.0)
+                (t / attack).min(1.0)
             };
             v = (v * 0.9) + (new_v * 0.1);
             v
@@ -614,30 +659,11 @@ impl Default for Pad {
         let envelope = ThreshEnvelope::new(f);
         let output = Pipe(
             Stack::new(
-                Pipe(
-                    Branch::new(
-                        Pipe(
-                            Branch::new(
-                                osc1,
-                                osc2
-                            ),
-                            Mix
-                        ),
-                        osc3
-                    ),
-                    Mix
-                ),
-                Pipe(envelope, Split)
+                Pipe(Branch::new(Pipe(Branch::new(osc1, osc2), Mix), osc3), Mix),
+                Pipe(envelope, Split),
             ),
-            Pipe(
-                Transpose,
-                Stack::new(
-                    Mul::default(),
-                    Mul::default(),
-                )
-            )
+            Pipe(Transpose, Stack::new(Mul::default(), Mul::default())),
         );
-
 
         Self {
             routing,
@@ -670,8 +696,8 @@ routing! {
 
 #[derive(Clone)]
 pub struct Riser {
-    osc: Box<dyn Node<Input=Value<(f32x8,)>, Output=Value<(f32x8, f32x8)>>>,
-    output: Box<dyn Node<Input=Value<(f32x8, f32x8)>, Output=Value<(f32x8, f32x8)>>>,
+    osc: Box<dyn Node<Input = Value<(f32x8,)>, Output = Value<(f32x8, f32x8)>>>,
+    output: Box<dyn Node<Input = Value<(f32x8, f32x8)>, Output = Value<(f32x8, f32x8)>>>,
     pub routing: RiserRouting,
     triggered: bool,
     base_pitch: f32x8,
@@ -685,11 +711,14 @@ impl Default for Riser {
             pitch: Box::new(Constant(f32x8::splat(0.0))),
         };
         let osc1 = Pipe(WaveTable::saw(), Split);
-        let osc2 = Pipe(Pipe(WaveTable::noise(), curry(Constant(f32x8::splat(0.5)), Mul::default())), Split);
-        let osc = Pipe(Branch::new(
-            osc1,
-            osc2,
-        ), Mix);
+        let osc2 = Pipe(
+            Pipe(
+                WaveTable::noise(),
+                curry(Constant(f32x8::splat(0.5)), Mul::default()),
+            ),
+            Split,
+        );
+        let osc = Pipe(Branch::new(osc1, osc2), Mix);
         let output = Stutter::new(10, 2.0);
 
         Self {
@@ -716,20 +745,17 @@ impl Node for Riser {
             self.base_pitch = f32x8::splat(pitch.max_element());
         }
         let input = if self.triggered {
-            let t = (self.time/6.0).min(1.0);
+            let t = (self.time / 6.0).min(1.0);
             if t == 1.0 {
                 self.triggered = false;
             }
-            let ta = f32x8::splat(1.0-t);
+            let ta = f32x8::splat(1.0 - t);
             let t = f32x8::splat(t);
             let pitch = ((self.base_pitch / f32x8::splat(6.0)) * ta) + self.base_pitch * t;
             let gain = t;
             self.time += f32x8::lanes() as f32 * self.per_sample;
             let Value((l, r)) = self.osc.process(Value((pitch,)));
-            Value((
-                l * gain,
-                r * gain
-            ))
+            Value((l * gain, r * gain))
         } else {
             Value((f32x8::splat(0.0), f32x8::splat(0.0)))
         };
@@ -740,7 +766,7 @@ impl Node for Riser {
         self.osc.set_sample_rate(rate);
         self.output.set_sample_rate(rate);
         self.routing.set_sample_rate(rate);
-        self.per_sample = 1.0/rate;
+        self.per_sample = 1.0 / rate;
     }
 }
 
@@ -751,7 +777,7 @@ routing! {
 
 #[derive(Clone)]
 pub struct BpmClock {
-    output: Box<dyn Node<Input=Value<(f32,)>, Output=Value<(f32x8,)>>>,
+    output: Box<dyn Node<Input = Value<(f32,)>, Output = Value<(f32x8,)>>>,
     pub routing: BpmClockRouting,
 }
 impl Default for BpmClock {
@@ -760,16 +786,13 @@ impl Default for BpmClock {
             bpm: Box::new(Constant(120.0)),
         };
         let output = Pipe(
-                curry(Constant((1.0/60.0)*4.0), Mul::default()),
-                LfoSine::positive()
+            curry(Constant((1.0 / 60.0) * 4.0), Mul::default()),
+            LfoSine::positive_random_phase(),
         );
-        let output = Pipe(
-            output,
-            Impulse::default()
-        );
+        let output = Pipe(output, Impulse::default());
         Self {
             output: Box::new(output),
-            routing
+            routing,
         }
     }
 }
@@ -802,7 +825,7 @@ pub struct Resampler {
     pub routing: ResamplerRouting,
     triggered: bool,
     sample_rate: f32,
-    envelope: Box<dyn Node<Input=Value<(f32x8,)>, Output=Value<(f32x8,)>>>,
+    envelope: Box<dyn Node<Input = Value<(f32x8,)>, Output = Value<(f32x8,)>>>,
 }
 impl Default for Resampler {
     fn default() -> Self {
@@ -814,21 +837,20 @@ impl Default for Resampler {
             freeze: Box::new(Constant(false)),
         };
 
-       let mut v = 0.0;
-        let f = move |t: f32, off_time:Option<f32>| {
+        let mut v = 0.0;
+        let f = move |t: f32, off_time: Option<f32>| {
             let new_v = if let Some(off_time) = off_time {
-                let release= 0.5;
+                let release = 0.5;
                 let t = t - off_time;
-                1.0 - (t/release).min(1.0)
+                1.0 - (t / release).min(1.0)
             } else {
                 let attack = 0.5;
-                (t/attack).min(1.0)
+                (t / attack).min(1.0)
             };
             v = (v * 0.9) + (new_v * 0.1);
             v
         };
         let envelope = ThreshEnvelope::new(f);
-
 
         Self {
             routing,
@@ -870,7 +892,7 @@ impl Node for Resampler {
             while self.idx >= len {
                 self.idx -= len;
             }
-            while self.idx < 0.0{
+            while self.idx < 0.0 {
                 self.idx += len;
             }
             let mut r = self.buffer.get(self.idx as usize).unwrap();
@@ -891,7 +913,6 @@ impl Node for Resampler {
     }
 }
 
-
 routing! {
     GranularSamplerRouting,
     gate: (f32x8,),
@@ -908,7 +929,7 @@ pub struct GranularSampler {
     pub routing: GranularSamplerRouting,
     triggered: bool,
     sample_rate: f32,
-    envelope: Box<dyn Node<Input=Value<(f32x8,)>, Output=Value<(f32x8,)>>>,
+    envelope: Box<dyn Node<Input = Value<(f32x8,)>, Output = Value<(f32x8,)>>>,
 }
 impl Default for GranularSampler {
     fn default() -> Self {
@@ -920,21 +941,20 @@ impl Default for GranularSampler {
             freeze: Box::new(Constant(false)),
         };
 
-       let mut v = 0.0;
-        let f = move |t: f32, off_time:Option<f32>| {
+        let mut v = 0.0;
+        let f = move |t: f32, off_time: Option<f32>| {
             let new_v = if let Some(off_time) = off_time {
-                let release= 0.5;
+                let release = 0.5;
                 let t = t - off_time;
-                1.0 - (t/release).min(1.0)
+                1.0 - (t / release).min(1.0)
             } else {
                 let attack = 0.5;
-                (t/attack).min(1.0)
+                (t / attack).min(1.0)
             };
             v = (v * 0.9) + (new_v * 0.1);
             v
         };
         let envelope = ThreshEnvelope::new(f);
-
 
         Self {
             routing,
@@ -990,20 +1010,30 @@ impl Node for GranularSampler {
     }
 }
 
-pub fn reverb() -> impl Node<Input=Value<(f32x8, f32x8)>, Output=Value<(f32x8, f32x8)>> {
+pub fn reverb() -> impl Node<Input = Value<(f32x8, f32x8)>, Output = Value<(f32x8, f32x8)>> {
     let mut rng = thread_rng();
 
     let comb_count = 300;
-    fn make_reverb(i: usize, count: usize, rng: &mut ThreadRng) -> impl Node<Input=Value<(f32x8,)>, Output=Value<(f32x8,)>> + Clone {
-        let len_range = 11.0+(1.0 - i as f32 / count as f32) * 1500.0;
-        let comb_len = (48000.0*(rng.gen_range(10.0..len_range)/1000.0)) as usize;
+    fn make_reverb(
+        i: usize,
+        count: usize,
+        rng: &mut ThreadRng,
+    ) -> impl Node<Input = Value<(f32x8,)>, Output = Value<(f32x8,)>> + Clone {
+        let len_range = 11.0 + (1.0 - i as f32 / count as f32) * 1500.0;
+        let comb_len = (48000.0 * (rng.gen_range(10.0..len_range) / 1000.0)) as usize;
         let scale_range = ((i as f32 + 1.0) / count as f32) * 3.0;
         let scale = rng.gen_range(-scale_range..scale_range);
         if i == 1 {
-            curry(Constant(f32x8::splat(scale)), Comb::new(DelayLine::new(comb_len)))
+            curry(
+                Constant(f32x8::splat(scale)),
+                Comb::new(DelayLine::new(comb_len)),
+            )
         } else {
-            let inner = make_reverb(i-1, count, rng);
-            curry(Constant(f32x8::splat(scale)), Comb::new(DelayLine::new_nested(comb_len, inner)))
+            let inner = make_reverb(i - 1, count, rng);
+            curry(
+                Constant(f32x8::splat(scale)),
+                Comb::new(DelayLine::new_nested(comb_len, inner)),
+            )
         }
     }
     let reverb = Stack::new(
@@ -1012,4 +1042,215 @@ pub fn reverb() -> impl Node<Input=Value<(f32x8, f32x8)>, Output=Value<(f32x8, f
     );
 
     reverb
+}
+
+routing! {
+    DrumRouting,
+    gate: (f32x8,),
+}
+
+#[derive(Clone)]
+pub struct BigDrum {
+    gain: Box<dyn Node<Input = Value<(f32x8,)>, Output = Value<(f32x8,)>>>,
+    noise: Box<dyn Node<Input = Value<(f32x8,)>, Output = Value<(f32x8,)>>>,
+    pub routing: DrumRouting,
+}
+impl Default for BigDrum {
+    fn default() -> Self {
+        let routing = DrumRouting {
+            gate: Box::new(Constant(f32x8::splat(0.0))),
+        };
+
+        let f = move |t: f32, _off_time: Option<f32>| {
+            let s = tweak!(5.0);
+            let attack = tweak!(0.002) * s;
+            let release = tweak!(0.025) * s;
+            if t < attack {
+                (t / attack).min(1.0)
+            } else if t < attack + release {
+                let t = t - attack;
+                1.0 - (t / release).min(1.0)
+            } else {
+                0.0
+            }
+        };
+        let gain = Pipe(
+            ThreshEnvelope::new(f),
+            curry(FnConstant(|| f32x8::splat(tweak!(2.0))), Mul::default()),
+        );
+
+        let f = move |t: f32, _off_time: Option<f32>| {
+            let s = tweak!(2.0);
+            let attack = tweak!(0.001) * s;
+            let release = tweak!(0.003) * s;
+            if t < attack {
+                (t / attack).min(1.0)
+            } else if t < attack + release {
+                let t = t - attack;
+                1.0 - (t / release).min(1.0)
+            } else {
+                0.0
+            }
+        };
+        let cutoff = Pipe(
+            ThreshEnvelope::new(f),
+            FnRescale(|| (tweak!(20.0), tweak!(800.0))),
+        );
+        let filter = curry(
+            Branch::new(
+                cutoff,
+                Pipe(Sink::default(), FnConstant(|| f32x8::splat(tweak!(3.0)))),
+            ),
+            Biquad::lowpass(),
+        );
+
+        //let r: &dyn Node<Input=Value<(f32x8, )>, Output=Value<(f32x8, f32x8)>> = &noise;
+        let (b_in, b) = Bridge::new((f32x8::splat(0.0),));
+        let mut noise = RetriggeringWaveTable::new(WaveTable::noise());
+        noise.routing.gate(Pipe(b, Strip::default()));
+        noise
+            .routing
+            .pitch(FnConstant(|| f32x8::splat(tweak!(880.0))));
+        let noise = Pipe(
+            b_in,
+            Pipe(
+                Pipe(
+                    Concat::<
+                        _,
+                        Value<(f32x8,)>,
+                        (NoValue, Value<(f32x8,)>),
+                        (Value<(f32x8,)>, Value<(f32x8,)>),
+                    >::new(noise),
+                    Flip::default(),
+                ),
+                filter,
+            ),
+        );
+
+        let low_filter = curry(
+            Branch::new(
+                FnConstant(|| f32x8::splat(tweak!(66.0))),
+                FnConstant(|| f32x8::splat(tweak!(10.0))),
+            ),
+            Biquad::peaking_eq(|| tweak!(1.0)),
+        );
+        let noise = Pipe(noise, low_filter);
+
+        //let noise = Pipe(noise, curry(FnConstant(|| f32x8::splat(tweak!(0.1))), Mul::default()));
+
+        Self {
+            routing,
+            gain: Box::new(gain),
+            noise: Box::new(noise),
+        }
+    }
+}
+
+impl Node for BigDrum {
+    type Input = NoValue;
+    type Output = Value<(f32x8, f32x8)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let gate = self.routing.gate.process(NoValue);
+        let gain = *self.gain.process(gate).car();
+        let noise = *self.noise.process(gate).car() * gain;
+        Value((noise, noise))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.routing.set_sample_rate(rate);
+        self.gain.set_sample_rate(rate);
+        self.noise.set_sample_rate(rate);
+    }
+}
+
+#[derive(Clone)]
+pub struct RetriggeringWaveTable {
+    wave_table: WaveTable,
+    triggered: bool,
+    pub routing: BassRouting,
+}
+impl RetriggeringWaveTable {
+    fn new(table: WaveTable) -> Self {
+        let routing = BassRouting {
+            gate: Box::new(Constant(f32x8::splat(0.0))),
+            pitch: Box::new(Constant(f32x8::splat(0.0))),
+        };
+        Self {
+            wave_table: table,
+            triggered: false,
+            routing,
+        }
+    }
+}
+
+impl Node for RetriggeringWaveTable {
+    type Input = NoValue;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let gate = self.routing.gate.process(NoValue);
+        let gate_max = gate.car().max_element();
+        let pitch = self.routing.pitch.process(NoValue);
+        if gate_max > 0.5 && !self.triggered {
+            self.triggered = true;
+            self.wave_table.idx = 0.0;
+        } else if gate_max < 0.5 {
+            self.triggered = false;
+        }
+        self.wave_table.process(pitch)
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.routing.set_sample_rate(rate);
+        self.wave_table.set_sample_rate(rate);
+    }
+}
+
+#[derive(Clone)]
+pub struct ExcitablePlink {
+    a: f64,
+    b: f64,
+    c: f64,
+    pub routing: BassRouting,
+}
+
+impl Default for ExcitablePlink {
+    fn default() -> Self {
+        let routing = BassRouting {
+            gate: Box::new(Constant(f32x8::splat(0.0))),
+            pitch: Box::new(Constant(f32x8::splat(0.0))),
+        };
+        Self {
+            a: 0.0,
+            b: 0.0,
+            c: 0.0,
+            routing,
+        }
+    }
+}
+
+impl Node for ExcitablePlink {
+    type Input = NoValue;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let gate = *self.routing.gate.process(NoValue).car();
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let x = gate.extract(i) as f64;
+            let y = (x + self.a) * tweak!(0.999);
+            let z = self.b * tweak!(-1.1) + y;
+            let v = y + z;
+            self.a = v;
+            self.b = y;
+            println!("{}", v);
+            r.replace(i, v as f32);
+        }
+        Value((r,))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.routing.set_sample_rate(rate);
+    }
 }
