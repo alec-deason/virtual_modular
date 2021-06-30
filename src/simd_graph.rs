@@ -1,5 +1,5 @@
 use dyn_clone::DynClone;
-use packed_simd_2::f32x8;
+use packed_simd_2::{f32x8, u32x8};
 use rand::prelude::*;
 use std::{cell::RefCell, f32::consts::TAU, marker::PhantomData, rc::Rc};
 
@@ -291,6 +291,24 @@ pub fn curry<A: Node, B: Node>(
         Default::default(),
     )
 }
+pub fn curry2<A: Node, B: Node>(
+    a: A,
+    b: B,
+) -> Curry<
+    A,
+    B,
+    (A::Output, Value<<B::Input as ValueT>::Cdr>),
+    (A::Input, Value<<B::Input as ValueT>::Cdr>),
+    Value<<B::Input as ValueT>::Cdr>,
+> {
+    Curry(
+        a,
+        b,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    )
+}
 
 #[derive(Clone)]
 pub struct Pipe<A: Clone, B: Clone>(pub A, pub B);
@@ -353,6 +371,16 @@ impl<A: Clone> Node for Constant<A> {
         Value((self.0.clone(),))
     }
 }
+#[derive(Clone)]
+pub struct RawConstant<A:ValueT>(pub A::Inner);
+impl<A: ValueT> Node for RawConstant<A> {
+    type Input = NoValue;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, _input: Self::Input) -> Self::Output {
+        A::from_inner(self.0.clone())
+    }
+}
 
 #[derive(Clone)]
 pub struct Splat;
@@ -403,6 +431,23 @@ impl<A: Clone> Node for RcConstant<A> {
 }
 
 #[derive(Clone)]
+pub struct RawRcConstant<A:ValueT>(pub Rc<RefCell<A::Inner>>);
+impl<A:ValueT> RawRcConstant<A> {
+    pub fn new(a: A::Inner) -> (Self, Rc<RefCell<A::Inner>>) {
+        let cell = Rc::new(RefCell::new(a));
+        (Self(Rc::clone(&cell)), cell)
+    }
+}
+impl<A: ValueT> Node for RawRcConstant<A> {
+    type Input = NoValue;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, _input: Self::Input) -> Self::Output {
+        A::from_inner(self.0.borrow().clone())
+    }
+}
+
+#[derive(Clone)]
 pub struct Bridge<A: ValueT>(pub Rc<RefCell<A::Inner>>);
 impl<A: ValueT> Bridge<A> {
     pub fn new(a: A::Inner) -> (Self, RcConstant<A::Inner>) {
@@ -411,6 +456,24 @@ impl<A: ValueT> Bridge<A> {
     }
 }
 impl<A: ValueT> Node for Bridge<A> {
+    type Input = A;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        *self.0.borrow_mut() = input.inner().clone();
+        input
+    }
+}
+
+#[derive(Clone)]
+pub struct RawBridge<A: ValueT>(pub Rc<RefCell<A::Inner>>);
+impl<A: ValueT> RawBridge<A> {
+    pub fn new(a: A::Inner) -> (Self, RawRcConstant<A>) {
+        let (constant, cell) = RawRcConstant::new(a);
+        (Self(cell), constant)
+    }
+}
+impl<A: ValueT> Node for RawBridge<A> {
     type Input = A;
     type Output = A;
     #[inline]
@@ -730,11 +793,11 @@ impl Node for LowPass {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 enum BiquadConfig {
     LowPass,
     HighPass,
-    PeakingEq(fn() -> f32),
+    PeakingEq(Rc<RefCell<(f32,)>>),
     Notch,
     BandPass,
 }
@@ -793,7 +856,7 @@ impl BiquadConfig {
             BiquadConfig::PeakingEq(db_gain) => {
                 let omega = TAU * (freq / sample_rate);
                 let alpha = omega.sin() / (2.0 * q);
-                let a = (10.0 * (db_gain() / 20.0)).sqrt();
+                let a = (10.0f32 * (db_gain.borrow().0 / 20.0)).sqrt();
                 BiquadCoefficients {
                     a0: (1.0 + alpha / a) as f64,
                     a1: (-2.0 * omega.cos()) as f64,
@@ -883,7 +946,7 @@ impl Biquad {
         }
     }
 
-    pub fn peaking_eq(db_gain: fn() -> f32) -> Self {
+    pub fn peaking_eq(db_gain: Rc<RefCell<(f32,)>>) -> Self {
         Self {
             config: BiquadConfig::PeakingEq(db_gain),
             coefficients: Default::default(),
@@ -1070,6 +1133,40 @@ impl Node for Impulse {
             }
         }
         Value((r,))
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct SImpulse(f32, bool);
+impl Default for SImpulse {
+    fn default() -> Self {
+        Self::new(0.5)
+    }
+}
+impl SImpulse {
+    pub fn new(threshold: f32) -> Self {
+        Self(threshold, false)
+    }
+}
+impl Node for SImpulse {
+    type Input = Value<(f32,)>;
+    type Output = Value<(f32,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let gate = (input.0).0;
+        let mut switched = false;
+        if !self.1 && gate > self.0 {
+            self.1 = true;
+            switched = true;
+        } else if gate < self.0 {
+            self.1 = false;
+        }
+        if switched {
+            Value((1.0,))
+        } else {
+            Value((0.0,))
+        }
     }
 }
 
@@ -2259,5 +2356,105 @@ where
         for (track, _) in &mut self.0 {
             track.set_sample_rate(rate);
         }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct AnalogToDigital(pub u32);
+impl Node for AnalogToDigital {
+    type Input = Value<(f32x8,)>;
+    type Output = Value<(u32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let a = *input.car();
+        let mut r = u32x8::splat(0);
+        for i in 0..f32x8::lanes() {
+            let a = a.extract(i);
+            r = r.replace(i, (a.min(1.0).max(0.0) * 2.0f32.powi(self.0 as i32)) as u32);
+        }
+        Value((r,))
+    }
+}
+#[derive(Clone)]
+pub struct BitsToImpulse(pub Vec<u32>, bool);
+impl BitsToImpulse {
+    pub fn new(bits: Vec<u32>) -> Self {
+        Self(bits, false)
+    }
+}
+impl Node for BitsToImpulse {
+    type Input = Value<(u32x8,)>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let input = *input.car();
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let  input = input.extract(i);
+            let mut triggered = false;
+            if self.0.iter().any(|k| (input & (1 << (k - 1))) != 0) {
+                if !self.1 {
+                    self.1 = true;
+                    triggered = true;
+                }
+            } else {
+                self.1 = false;
+            }
+            if triggered {
+                r = r.replace(i, 1.0);
+            }
+        }
+        Value((r,))
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct StereoBoost;
+impl Node for StereoBoost {
+    type Input = Value<(f32x8, (f32x8, f32x8))>;
+    type Output = Value<(f32x8, f32x8)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((amount, (mut left, mut right))) = input;
+        let side = left - right;
+        left += side * amount;
+        right += -side * amount;
+        Value((left, right))
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct SumSequencer(fn() -> [(u32, f32); 4], u32, bool);
+impl SumSequencer {
+    pub fn new(f: fn() -> [(u32, f32); 4]) -> Self {
+        Self(f, 0, false)
+    }
+}
+impl Node for SumSequencer {
+    type Input = Value<(f32x8,)>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((gate,)) = input;
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let gate = gate.extract(i);
+            if gate > 0.5 {
+                if !self.2 {
+                    self.2 = true;
+                    self.1 += 1;
+                    if self.0().iter().any(|(d,p)| *d != 0 && self.1 % d == 0 && thread_rng().gen::<f32>() < *p) {
+                        r = r.replace(i, 10.0);
+                    }
+                }
+            } else {
+                self.2 = false;
+            }
+        }
+        Value((r,))
     }
 }

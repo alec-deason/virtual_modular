@@ -133,6 +133,15 @@ impl<A: Copy> Combine<NoValue, Value<(A,)>> for (NoValue, Value<(A,)>) {
         (NoValue, v)
     }
 }
+impl<A: Copy, B:Copy> Combine<NoValue, Value<(A,B)>> for (NoValue, Value<(A,B)>) {
+    type Output = Value<(A,B)>;
+    fn combine(_a: NoValue, b: Value<(A,B)>) -> Self::Output {
+        b
+    }
+    fn split(v: Value<(A,B)>) -> (NoValue, Value<(A,B)>) {
+        (NoValue, v)
+    }
+}
 impl<A: Clone, B: Clone> Combine<Value<(A,)>, Value<(B,)>> for (Value<(A,)>, Value<(B,)>) {
     type Output = Value<(A, B)>;
     fn combine(a: Value<(A,)>, b: Value<(B,)>) -> Self::Output {

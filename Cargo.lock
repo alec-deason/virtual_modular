@@ -125,6 +125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "concat-idents"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f29bafee6d91a80db18bcd41dbdbb8d1d117ea31676b22e7370061ccea5f76c"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -277,6 +287,7 @@ dependencies = [
 name = "instruments"
 version = "0.1.0"
 dependencies = [
+ "concat-idents",
  "cpal",
  "dyn-clone",
  "inline_tweak",

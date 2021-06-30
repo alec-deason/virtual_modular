@@ -13,6 +13,7 @@ rand = "0.8.3"
 dyn-clone = "1.0.4"
 packed_simd_2 = "0.3.5"
 inline_tweak = "1.0.8"
+concat-idents = "1.1.2"
 
 [dev-dependencies]
 cpal = "0.13"
