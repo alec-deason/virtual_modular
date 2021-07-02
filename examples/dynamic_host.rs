@@ -3,10 +3,52 @@ use packed_simd_2::f32x8;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+const DEFAULT_SYNTH: &'static str = "# Sequence
+rhythm_gate=sine(16.0)
+rhythm_rnd=turing_machine(0.0,0.9,8)
+(0,rhythm_gate,0,rhythm_rnd)
+
+rnd=turing_machine(0,0.9,8)
+(0,rhythm_rnd,0,rnd)
+
+# Pitch mapping
+pitch=rescale(440.0,880.0)
+(0,rnd,2,pitch)
+
+# Oscillator
+top_tone=saw
+(0,pitch,0,top_tone)
+sub_pitch=mul(0.25)
+(0,pitch,1,sub_pitch)
+sub_tone=sine
+(0,sub_pitch,0,sub_tone)
+tone=add
+(0,top_tone,0,tone)
+(0,sub_tone,1,tone)
+envelope=ad
+(0,rhythm_rnd,0,envelope)
+enveloped_tone=mul
+(0,envelope,0,enveloped_tone)
+(0,tone,1,enveloped_tone)
+
+
+# Final
+filter=lpf(440,0.7)
+(0,enveloped_tone,2,filter)
+stereo_signal=split
+(0,filter,0,stereo_signal)
+
+output(stereo_signal)";
+
+
 fn main() {
     let mut builder = InstrumentSynth::builder();
 
-    let mut graph = DynamicGraph::parse(&std::fs::read_to_string("/tmp/test").unwrap());
+    let mut graph = if let Ok(synth_data) = std::fs::read_to_string("/tmp/synth") {
+        DynamicGraph::parse(&synth_data)
+    } else {
+        DynamicGraph::parse(DEFAULT_SYNTH)
+    };
 
     let mut synth = builder.build_with_synth(graph);
 
@@ -66,11 +108,11 @@ fn write_data<T>(
 ) where
     T: cpal::Sample,
 {
-    if let Ok(metadata) = std::fs::metadata("/tmp/test") {
+    if let Ok(metadata) = std::fs::metadata("/tmp/synth") {
         if let Ok(modified) = metadata.modified() {
             if modified > *last_change {
                 *last_change = modified;
-                let graph = DynamicGraph::parse(&std::fs::read_to_string("/tmp/test").unwrap());
+                let graph = DynamicGraph::parse(&std::fs::read_to_string("/tmp/synth").unwrap());
                 synth.replace_synth(graph);
             }
         }

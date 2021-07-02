@@ -1,9 +1,13 @@
 use dyn_clone::DynClone;
 use packed_simd_2::{f32x8, u32x8};
 use rand::prelude::*;
+use linkme::distributed_slice;
 use std::{cell::RefCell, f32::consts::TAU, marker::PhantomData, rc::Rc};
 
-use crate::type_list::{Combine, NoValue, Value, ValueT, DynamicValue};
+use crate::{
+    dynamic_graph::{BoxedDynamicNode, MODULES},
+    type_list::{Combine, NoValue, Value, ValueT, DynamicValue},
+};
 
 pub trait Node: DynClone {
     type Input: ValueT;
@@ -134,6 +138,16 @@ where
     fn process(&mut self, input: Self::Input) -> Self::Output {
         Value((*input.car() + input.cdr().clone(),))
     }
+}
+#[distributed_slice(MODULES)]
+fn add() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(Add::<f32x8, f32x8>::default());
+    ("add".to_string(), n)
+}
+#[distributed_slice(MODULES)]
+fn mul() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(Mul::<f32x8, f32x8>::default());
+    ("mul".to_string(), n)
 }
 #[derive(Copy, Clone)]
 pub struct Sub<A, B>(PhantomData<A>, PhantomData<B>);
@@ -547,6 +561,23 @@ where
     }
 }
 
+#[distributed_slice(MODULES)]
+fn dynamic_ad() -> (String, BoxedDynamicNode) {
+    let f = move |t: f32, off_time: Option<f32>| {
+        let attack = 0.05;
+        let release = 0.1;
+        if t < attack {
+            (t / attack).min(1.0)
+        } else {
+            let t = t - attack;
+            1.0 - (t / release).min(1.0)
+        }
+    };
+    let envelope = ThreshEnvelope::new(f);
+    let n = BoxedDynamicNode::new(envelope);
+    ("ad".to_string(), n)
+}
+
 #[derive(Clone)]
 pub struct Unison<A: Clone> {
     voices: Vec<(f32, f32, A)>,
@@ -762,6 +793,11 @@ impl Node for Split {
         Value((*input.car(), *input.car()))
     }
 }
+#[distributed_slice(MODULES)]
+fn split() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(Split);
+    ("split".to_string(), n)
+}
 
 #[derive(Clone, Default)]
 pub struct LowPass {
@@ -962,6 +998,11 @@ impl Biquad {
             sample_rate: 44100.0,
         }
     }
+}
+#[distributed_slice(MODULES)]
+fn lpf() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(Biquad::lowpass());
+    ("lpf".to_string(), n)
 }
 
 impl Node for Biquad {
@@ -1738,6 +1779,11 @@ impl<A> Default for Log<A> {
         Self(Default::default())
     }
 }
+#[distributed_slice(MODULES)]
+fn dynamic_log() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(Log::<Value<(f32x8,)>>::default());
+    ("log".to_string(), n)
+}
 
 impl<A: ValueT + std::fmt::Debug> Node for Log<A> {
     type Input = A;
@@ -2007,6 +2053,24 @@ impl Node for Rescale {
         v += f32x8::splat(self.0);
         Value((v,))
     }
+}
+#[derive(Copy, Clone)]
+pub struct ModulatedRescale;
+impl Node for ModulatedRescale {
+    type Input = Value<((f32x8, f32x8), f32x8,)>;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value(((min, max), mut v)) = input;
+        v *= max - min;
+        v += min;
+        Value((v,))
+    }
+}
+#[distributed_slice(MODULES)]
+fn rescale() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(ModulatedRescale);
+    ("rescale".to_string(), n)
 }
 
 #[derive(Copy, Clone)]

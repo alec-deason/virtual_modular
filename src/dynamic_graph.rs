@@ -3,6 +3,7 @@ use std::{
     collections::{HashSet, HashMap},
     cell::RefCell,
 };
+use linkme::distributed_slice;
 
 use packed_simd_2::f32x8;
 
@@ -108,7 +109,6 @@ impl DynamicNode for BoxedDynamicNode {
     }
 }
 
-use linkme::distributed_slice;
 #[distributed_slice]
 pub static MODULES: [fn() -> (String, BoxedDynamicNode)] = [..];
 
@@ -119,18 +119,18 @@ fn c() -> (String, BoxedDynamicNode) {
 }
 #[distributed_slice(MODULES)]
 fn sine() -> (String, BoxedDynamicNode) {
-    ("sine".to_string(), BoxedDynamicNode::new(crate::simd_graph::pipe(crate::simd_graph::WaveTable::sine(), crate::simd_graph::Split)))
+    ("sine".to_string(), BoxedDynamicNode::new(crate::simd_graph::WaveTable::sine()))
 }
 #[distributed_slice(MODULES)]
 fn saw() -> (String, BoxedDynamicNode) {
-    ("saw".to_string(), BoxedDynamicNode::new(crate::simd_graph::pipe(crate::simd_graph::WaveTable::saw(), crate::simd_graph::Split)))
+    ("saw".to_string(), BoxedDynamicNode::new(crate::simd_graph::WaveTable::saw()))
 }
 
 #[derive(Clone, Default)]
 pub struct DynamicGraph {
     nodes: Vec<BoxedDynamicNode>,
     output_node: usize,
-    edges: HashMap<usize, (Vec<usize>, Vec<usize>)>,
+    edges: HashMap<usize, Vec<(usize, usize, usize)>>,
     topo_sort: Vec<usize>,
 }
 
@@ -138,14 +138,10 @@ impl DynamicGraph {
     pub fn process(&mut self) -> Value<(f32x8, f32x8)> {
         for node in &self.topo_sort {
             self.nodes[*node].process();
-            if let Some((others_a, others_b)) = self.edges.get(node) {
-                for other_node in others_a {
-                    let v = self.nodes[*node].get(0);
-                    self.nodes[*other_node].set(0, v);
-                }
-                for other_node in others_b {
-                    let v = self.nodes[*node].get(1);
-                    self.nodes[*other_node].set(1, v);
+            if let Some(others) = self.edges.get(node) {
+                for (v1, other_node, v2) in others {
+                    let v = self.nodes[*node].get(*v1);
+                    self.nodes[*other_node].set(*v2, v);
                 }
             }
         }
@@ -162,13 +158,9 @@ impl DynamicGraph {
         k
     }
 
-    pub fn add_edge(&mut self, a: usize, v: usize, b: usize) {
-        let e = self.edges.entry(a).or_insert_with(|| (vec![], vec![]));
-        if v == 0 {
-            e.0.push(b);
-        } else {
-            e.1.push(b);
-        }
+    pub fn add_edge(&mut self, v1: usize, a: usize, v2: usize, b: usize) {
+        let e = self.edges.entry(a).or_insert_with(|| vec![]);
+        e.push((v1, b, v2));
     }
 
     pub fn set_output_node(&mut self, n: usize) {
@@ -183,7 +175,7 @@ impl DynamicGraph {
         while !nodes.is_empty() {
             let mut to_remove = None;
             for node in &nodes {
-                if !edges.values().any(|(a, b)| a.iter().any(|k| k==node) || b.iter().any(|k| k==node)) {
+                if !edges.values().any(|a| a.iter().any(|(_, k, _)| k==node)) {
                     self.topo_sort.push(*node);
                     to_remove = Some(*node);
                     break;
@@ -201,9 +193,13 @@ impl DynamicGraph {
         use std::str::{self, FromStr};
         #[derive(Debug)]
         enum Line {
-            Node(String, String, Option<f32>),
-            Edge(String, u32, String),
+            Node(String, String, Option<Vec<f32>>),
+            Edge(u32, String, u32, String),
             OutputNode(String),
+            Comment,
+        }
+        fn comment<'a>() -> Parser<'a, u8, Line> {
+            (sym(b'#') * none_of(b"\n").repeat(0..)).map(|_| Line::Comment)
         }
         fn node<'a>() -> Parser<'a, u8, Line> {
             let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
@@ -215,7 +211,7 @@ impl DynamicGraph {
                 .convert(str::from_utf8)
                 .convert(f32::from_str);
 
-            let parameter = (sym(b'(') * number - sym(b')')).opt();
+            let parameter = (sym(b'(') * list(number, sym(b',')) - sym(b')')).opt();
             ((none_of(b"\n=(),")).repeat(1..).convert(String::from_utf8) - sym(b'=') + (none_of(b"(),\n")).repeat(1..).convert(String::from_utf8) + parameter).map(|((k, n), p)| Line::Node(k, n, p))
         }
         fn output<'a>() -> Parser<'a, u8, Line> {
@@ -225,14 +221,14 @@ impl DynamicGraph {
         fn edge<'a>() -> Parser<'a, u8, Line> {
             let p = sym(
                 b'(') *
+                one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - sym(b',') +
                 (none_of(b"),")).repeat(1..).convert(String::from_utf8) - sym(b',') +
                 one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - sym(b',') +
                 (none_of(b")")).repeat(1..).convert(String::from_utf8)
                 - sym(b')');
-            p.map(|((a, c),b)| Line::Edge(a, c, b))
+            p.map(|(((c1, a), c),b)| Line::Edge(c1, a, c, b))
         }
-        (one_of(b" \n").repeat(0..) * list(output() | edge() | node(), sym(b'\n')) - one_of(b" \n").repeat(0..)).map(|l| {
-            println!("{:?}", l);
+        (list(output() | edge() | node() | comment(), sym(b'\n').repeat(1..)) - one_of(b" \n").repeat(0..)).map(|l| {
             let modules: HashMap<_,_> = MODULES.iter().map(|f| f()).collect();
             let mut g = DynamicGraph::default();
             let mut nodes = HashMap::new();
@@ -240,15 +236,17 @@ impl DynamicGraph {
                 if let Line::Node(k, n, p) = l {
                     let k = k.trim().to_string();
                     let mut n = modules[n].clone();
-                    if let Some(p) = p {
-                        n.set(0, f32x8::splat(*p));
+                    if let Some(ps) = p {
+                        for (i,p) in ps.iter().enumerate() {
+                            n.set(i, f32x8::splat(*p));
+                        }
                     }
                     nodes.insert(k, g.add_boxed_node(n));
                 }
             }
             for l in &l {
                 match l {
-                    Line::Edge(a, c, b) => g.add_edge(nodes[a], *c as usize, nodes[b]),
+                    Line::Edge(c1, a, c, b) => g.add_edge(*c1 as usize, nodes[a], *c as usize, nodes[b]),
                     Line::OutputNode(a) => g.set_output_node(nodes[a]),
                     _ => ()
                 }

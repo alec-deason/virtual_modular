@@ -4,8 +4,10 @@ use std::{
     cell::RefCell,
 };
 use concat_idents::concat_idents;
+use linkme::distributed_slice;
 use crate::{
     simd_graph::*,
+    dynamic_graph::{BoxedDynamicNode, MODULES},
     type_list::{Combine, NoValue, Value, ValueT},
 };
 use inline_tweak::tweak;
@@ -1228,17 +1230,19 @@ routing! {
 #[derive(Clone)]
 pub struct SoftTuringMachine {
     pub routing: SoftMachineRouting,
+    inner: InlineSoftTuringMachine
+}
+#[derive(Clone)]
+pub struct InlineSoftTuringMachine {
     sequence: Vec<Option<f32>>,
     pulse_outs: HashMap<usize, Rc<RefCell<f32>>>,
     idx: usize,
     triggered: bool,
 }
 
-impl Default for SoftTuringMachine {
+impl Default for InlineSoftTuringMachine {
     fn default() -> Self {
-        let mut routing = SoftMachineRouting::default();
         Self {
-            routing,
             sequence: vec![None],
             pulse_outs: HashMap::new(),
             idx: 0,
@@ -1246,7 +1250,16 @@ impl Default for SoftTuringMachine {
         }
     }
 }
-impl SoftTuringMachine {
+impl Default for SoftTuringMachine {
+    fn default() -> Self {
+        let mut routing = SoftMachineRouting::default();
+        Self {
+            routing,
+            inner: InlineSoftTuringMachine::default(),
+        }
+    }
+}
+impl InlineSoftTuringMachine {
    pub fn pulse(&mut self, idx: usize) -> Rc<RefCell<f32>> {
         self.pulse_outs.entry(idx).or_insert_with(|| Rc::new(RefCell::new(0.0))).clone()
     }
@@ -1260,6 +1273,22 @@ impl Node for SoftTuringMachine {
         let gate = *self.routing.gate.0.process(NoValue).car();
         let lock = *self.routing.lock.0.process(NoValue).car();
         let len = *self.routing.len.0.process(NoValue).car();
+        self.inner.process(Value(((gate, lock), len as f32)))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.routing.set_sample_rate(rate);
+        self.inner.set_sample_rate(rate);
+    }
+}
+
+impl Node for InlineSoftTuringMachine {
+    type Input = Value<((f32, f32), f32)>;
+    type Output = Value<(f32,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let mut rng = thread_rng();
+        let Value(((gate, lock), len)) = input;
         for cell in self.pulse_outs.values_mut() {
             *cell.borrow_mut() = 0.0;
         }
@@ -1297,10 +1326,11 @@ impl Node for SoftTuringMachine {
         let r = self.sequence[self.idx].unwrap_or(0.0);
         Value((r,))
     }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.routing.set_sample_rate(rate);
-    }
+}
+#[distributed_slice(MODULES)]
+fn turing_machine() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(InlineSoftTuringMachine::default());
+    ("turing_machine".to_string(), n)
 }
 
 #[derive(Clone)]
