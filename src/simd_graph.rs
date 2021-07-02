@@ -3,7 +3,7 @@ use packed_simd_2::{f32x8, u32x8};
 use rand::prelude::*;
 use std::{cell::RefCell, f32::consts::TAU, marker::PhantomData, rc::Rc};
 
-use crate::type_list::{Combine, NoValue, Value, ValueT};
+use crate::type_list::{Combine, NoValue, Value, ValueT, DynamicValue};
 
 pub trait Node: DynClone {
     type Input: ValueT;
@@ -328,6 +328,9 @@ where
         self.0.set_sample_rate(rate);
         self.1.set_sample_rate(rate);
     }
+}
+pub fn pipe<I, O, A: Node<Input=I, Output=B::Input> + Clone, B: Node<Output=O> + Clone>(a: A, b: B) -> Pipe<A, B> {
+    Pipe(a, b)
 }
 #[derive(Clone)]
 pub struct Concat<A, B, C, D>(A, PhantomData<B>, PhantomData<C>, PhantomData<D>);
@@ -1090,7 +1093,7 @@ impl Node for SampleAndHold {
             if !self.1 && gate > 0.5 || !self.2 {
                 self.0 = signal;
                 self.1 = true;
-                self.1 = true;
+                self.2 = true;
             } else if gate < 0.5 {
                 self.1 = false;
             }
@@ -1954,14 +1957,16 @@ impl Stutter {
     }
 }
 impl Node for Stutter {
-    type Input = Value<(f32x8, f32x8)>;
+    type Input = Value<(f32x8, (f32x8, f32x8))>;
     type Output = Value<(f32x8, f32x8)>;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-        self.delay.process(input);
-        let Value((mut l, mut r)) = input;
+        let Value((len_mult, signal)) = input;
+        self.delay.process(Value(signal));
+        let (mut l, mut r) = signal;
         let d = (self.delay).0.buffer.len() as f32 / self.count as f32;
         for i in 1..self.count {
+            let d = d*len_mult.max_element();
             let p = self.pans[i as usize];
             let m = f32x8::splat((1.0 - ((i as f32 + 1.0) / self.count as f32)).powi(3));
             let i = (i as f32 * d) as usize;
@@ -2015,6 +2020,21 @@ impl<F: Fn() -> (f32, f32) + Clone> Node for FnRescale<F> {
         let mut v = (input.0).0;
         v *= f32x8::splat(b - a);
         v += f32x8::splat(a);
+        Value((v,))
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct FnSRescale<F>(pub F);
+impl<F: Fn() -> (f32, f32) + Clone> Node for FnSRescale<F> {
+    type Input = Value<(f32,)>;
+    type Output = Value<(f32,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let (a, b) = (self.0)();
+        let mut v = (input.0).0;
+        v *= b - a;
+        v += a;
         Value((v,))
     }
 }
@@ -2306,7 +2326,7 @@ impl<F: Fn(f32x8) -> f32x8 + Clone> Node for BFunc<F> {
 
 #[derive(Clone)]
 pub struct Mixer<A: ValueT, B: ValueT>(
-    Vec<(Box<dyn Node<Input = A, Output = B>>, Rc<RefCell<f32>>)>,
+    Vec<(Box<dyn Node<Input = A, Output = B>>, Rc<RefCell<Box<dyn Node<Input=NoValue, Output=Value<(f32,)>>>>>)>,
 );
 
 impl<A: ValueT, B: ValueT> Default for Mixer<A, B> {
@@ -2319,17 +2339,19 @@ impl<A: ValueT, B: ValueT> Mixer<A, B> {
     pub fn add_track(
         &mut self,
         track: impl Node<Input = A, Output = B> + 'static,
-    ) -> Rc<RefCell<f32>> {
-        let gain = Rc::new(RefCell::new(1.0));
-        self.add_track_with_gain(track, Rc::clone(&gain));
-        gain
+    ) -> Rc<RefCell<Box< dyn Node<Input=NoValue, Output=Value<(f32,)>>>>> {
+        let gain = Constant(1.0);
+        self.add_track_with_gain(track, gain)
     }
     pub fn add_track_with_gain(
         &mut self,
         track: impl Node<Input = A, Output = B> + 'static,
-        gain: Rc<RefCell<f32>>,
-    ) {
-        self.0.push((Box::new(track), gain));
+        gain: impl Node<Input=NoValue, Output=Value<(f32,)>> + 'static,
+    ) -> Rc<RefCell<Box<dyn Node<Input=NoValue, Output=Value<(f32,)>>>>> {
+        let gain: Box<dyn Node<Input=NoValue, Output=Value<(f32,)>>> = Box::new(gain);
+        let gain = Rc::new(RefCell::new(gain));
+        self.0.push((Box::new(track), Rc::clone(&gain)));
+        gain
     }
 }
 impl<A, B> Node for Mixer<A, B>
@@ -2344,17 +2366,18 @@ where
     fn process(&mut self, input: Self::Input) -> Self::Output {
         let (track, gain) = &mut self.0[0];
         let s = track.process(input.clone()).clone();
-        let mut r = s * *gain.borrow();
+        let mut r = s * *gain.borrow_mut().process(NoValue).car();
         for (track, gain) in self.0.iter_mut().skip(1) {
             let s = track.process(input.clone());
-            r = r + s * *gain.borrow();
+            r = r + s * *gain.borrow_mut().process(NoValue).car();
         }
         r
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
-        for (track, _) in &mut self.0 {
+        for (track, gain) in &mut self.0 {
             track.set_sample_rate(rate);
+            gain.borrow_mut().set_sample_rate(rate);
         }
     }
 }
@@ -2456,5 +2479,70 @@ impl Node for SumSequencer {
             }
         }
         Value((r,))
+    }
+}
+
+#[derive(Copy, Clone)]
+pub enum Interpolation {
+    Constant { value: f32, duration: f32 },
+    Linear { start: f32, end: f32, duration: f32 },
+}
+impl Interpolation {
+    fn evaluate(&self, time: f32) -> (f32, bool) {
+        match self {
+            Interpolation::Linear { start, end, duration } => {
+                if time >= *duration {
+                    (*end, false)
+                } else {
+                    let t = (duration - time) / duration;
+                    (start * t + end * (1.0-t), true)
+                }
+            }
+            Interpolation::Constant { value, duration } => {
+                (*value, time < *duration)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Automation {
+    steps: Vec<Interpolation>,
+    step: usize,
+    time: f32,
+    pub do_loop: bool,
+    per_sample: f32,
+}
+impl Automation {
+    pub fn new(steps: &[Interpolation]) -> Self {
+        Self {
+            steps: steps.to_vec(),
+            step: 0,
+            time: 0.0,
+            do_loop: true,
+            per_sample: 0.0,
+        }
+    }
+}
+
+impl Node for Automation {
+    type Input = NoValue;
+    type Output = Value<(f32,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let step = &self.steps[self.step];
+        let (v, running) = step.evaluate(self.time);
+        if !running {
+            self.time = 0.0;
+            self.step = (self.step + 1) % self.steps.len();
+        } else {
+            self.time += self.per_sample;
+        }
+        Value((v,))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = f32x8::lanes() as f32 / rate;
     }
 }

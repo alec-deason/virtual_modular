@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     rc::Rc,
     cell::RefCell,
 };
@@ -1227,7 +1228,8 @@ routing! {
 #[derive(Clone)]
 pub struct SoftTuringMachine {
     pub routing: SoftMachineRouting,
-    sequence: Vec<f32>,
+    sequence: Vec<Option<f32>>,
+    pulse_outs: HashMap<usize, Rc<RefCell<f32>>>,
     idx: usize,
     triggered: bool,
 }
@@ -1237,10 +1239,16 @@ impl Default for SoftTuringMachine {
         let mut routing = SoftMachineRouting::default();
         Self {
             routing,
-            sequence: vec![0.0],
+            sequence: vec![None],
+            pulse_outs: HashMap::new(),
             idx: 0,
             triggered: false,
         }
+    }
+}
+impl SoftTuringMachine {
+   pub fn pulse(&mut self, idx: usize) -> Rc<RefCell<f32>> {
+        self.pulse_outs.entry(idx).or_insert_with(|| Rc::new(RefCell::new(0.0))).clone()
     }
 }
 impl Node for SoftTuringMachine {
@@ -1252,16 +1260,31 @@ impl Node for SoftTuringMachine {
         let gate = *self.routing.gate.0.process(NoValue).car();
         let lock = *self.routing.lock.0.process(NoValue).car();
         let len = *self.routing.len.0.process(NoValue).car();
+        for cell in self.pulse_outs.values_mut() {
+            *cell.borrow_mut() = 0.0;
+        }
         if gate > 0.5 {
             if !self.triggered {
                 self.triggered = true;
                 self.idx += 1;
                 self.idx = self.idx % len as usize;
                 while self.sequence.len() <= self.idx {
-                    self.sequence.push(rng.gen());
+                    //if rng.gen::<f32>() > 0.5 {
+                        self.sequence.push(Some(rng.gen()));
+                    //} else {
+                    //    self.sequence.push(None);
+                    //}
                 }
                 if rng.gen::<f32>() > lock {
-                    self.sequence[self.idx] = rng.gen();
+                    //if rng.gen::<f32>() > 0.5 {
+                        self.sequence[self.idx] = Some(rng.gen());
+                    //}
+                }
+                for (i, cell) in &mut self.pulse_outs {
+                    let idx = (self.idx + i) % len as usize;
+                    if idx < self.sequence.len() {//&& self.sequence[idx].is_some() {
+                        *cell.borrow_mut() = 1.0;
+                    }
                 }
             }
         } else {
@@ -1271,11 +1294,54 @@ impl Node for SoftTuringMachine {
         while self.sequence.len() <= self.idx {
             self.sequence.push(rng.gen());
         }
-        let r = self.sequence[self.idx];
+        let r = self.sequence[self.idx].unwrap_or(0.0);
         Value((r,))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.routing.set_sample_rate(rate);
+    }
+}
+
+#[derive(Clone)]
+pub struct ShiftRegister {
+    pub registers: Vec<Rc<RefCell<f32>>>,
+    triggered: bool,
+    initialized: bool,
+}
+impl ShiftRegister {
+    pub fn new() -> Self {
+        Self {
+            registers: (0..8).map(|_| Rc::new(RefCell::new(0.0))).collect(),
+            triggered: false,
+            initialized: false,
+        }
+    }
+}
+impl Node for ShiftRegister {
+    type Input = Value<(f32x8, f32x8)>;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+let mut r = f32x8::splat(0.0);
+         for i in 0..f32x8::lanes() {
+             let gate = (input.0).0.extract(i);
+             let signal = (input.0).1.extract(i);
+             if !self.triggered && gate > 0.5 || !self.initialized {
+                 for i in 1..self.registers.len() {
+                     let i = self.registers.len()-i;
+                     let j = i-1;
+                     let v = *self.registers[j].borrow();
+                     *self.registers[i].borrow_mut() = v;
+                 }
+                 *self.registers[0].borrow_mut() = signal;
+                 self.triggered = true;
+                 self.initialized = true;
+             } else if gate < 0.5 {
+                 self.triggered = false;
+             }
+             r = unsafe { r.replace_unchecked(i, *self.registers[0].borrow()) };
+         }
+         Value((r,))
     }
 }

@@ -1,7 +1,7 @@
 use packed_simd_2::f32x8;
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Value<A: Clone>(pub A);
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct NoValue;
 
 impl<A, B> std::ops::Add for Value<(A, A)>
@@ -190,4 +190,55 @@ impl Combine<NoValue, NoValue> for (NoValue, NoValue) {
     fn split(v: NoValue) -> (NoValue, NoValue) {
         (NoValue, NoValue)
     }
+}
+
+pub trait DynamicValue:ValueT {
+    fn get(&self, i: usize) -> f32x8;
+    fn set(&mut self, i: usize, v: f32x8);
+    fn len(&self) -> usize;
+}
+
+impl DynamicValue for Value<(f32x8,)> {
+    fn get(&self, i: usize) -> f32x8 {
+        assert_eq!(i, 0);
+        (self.0).0
+    }
+
+    fn set(&mut self, i: usize, v: f32x8) {
+        assert_eq!(i, 0);
+        (self.0).0 = v;
+    }
+    fn len(&self) -> usize { 1 }
+}
+
+impl DynamicValue for Value<(f32x8, f32x8)> {
+    fn get(&self, i: usize) -> f32x8 {
+        match i {
+            0 => (self.0).0,
+            1 => (self.0).1,
+            _ => panic!()
+        }
+    }
+
+    fn set(&mut self, i: usize, v: f32x8) {
+        match i {
+            0 => (self.0).0 = v,
+            1 => (self.0).1 = v,
+            _ => panic!()
+        }
+    }
+
+    fn len(&self) -> usize { 2 }
+}
+
+impl DynamicValue for NoValue {
+    fn get(&self, i: usize) -> f32x8 {
+        panic!()
+    }
+
+    fn set(&mut self, i: usize, v: f32x8) {
+        panic!()
+    }
+
+    fn len(&self) -> usize { 0 }
 }
