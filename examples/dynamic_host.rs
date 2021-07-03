@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use ::instruments::{instruments::*, simd_graph::*, type_list::Value, InstrumentSynth, dynamic_graph::{DynamicGraph, BoxedDynamicNode}};
 use packed_simd_2::f32x8;
 
@@ -50,6 +51,8 @@ fn main() {
         DynamicGraph::parse(DEFAULT_SYNTH)
     };
 
+    let reload_data = Arc::clone(&graph.reload_data);
+
     let mut synth = builder.build_with_synth(graph);
 
     let cpal_host = cpal::default_host();
@@ -65,8 +68,17 @@ fn main() {
         cpal::SampleFormat::U16 => run::<u16>(&device, &config.into(), synth),
     };
 
+    let mut last_change = std::time::SystemTime::now();
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if let Ok(metadata) = std::fs::metadata("/tmp/synth") {
+            if let Ok(modified) = metadata.modified() {
+                if modified > last_change {
+                    last_change = modified;
+                    reload_data.lock().unwrap().replace(std::fs::read_to_string("/tmp/synth").unwrap());
+                }
+            }
+        }
     }
 }
 
@@ -84,13 +96,12 @@ where
 
     let mut outputs = vec![vec![0.0; 128]; 2];
 
-    let mut last_change = std::time::SystemTime::now();
 
     let stream = device
         .build_output_stream(
             config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                write_data(data, channels, &mut synth, &mut outputs, &mut last_change)
+                write_data(data, channels, &mut synth, &mut outputs)
             },
             err_fn,
         )
@@ -104,19 +115,9 @@ fn write_data<T>(
     channels: usize,
     synth: &mut InstrumentSynth,
     outputs: &mut Vec<Vec<f32>>,
-    last_change: &mut std::time::SystemTime,
 ) where
     T: cpal::Sample,
 {
-    if let Ok(metadata) = std::fs::metadata("/tmp/synth") {
-        if let Ok(modified) = metadata.modified() {
-            if modified > *last_change {
-                *last_change = modified;
-                let graph = DynamicGraph::parse(&std::fs::read_to_string("/tmp/synth").unwrap());
-                synth.replace_synth(graph);
-            }
-        }
-    }
     outputs[0].resize(output.len() / 2, 0.0);
     outputs[0].fill(0.0);
     outputs[1].resize(output.len() / 2, 0.0);

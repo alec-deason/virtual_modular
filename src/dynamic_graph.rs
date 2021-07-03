@@ -1,5 +1,6 @@
 use dyn_clone::DynClone;
 use std::{
+    sync::{Mutex,Arc},
     collections::{HashSet, HashMap},
     cell::RefCell,
 };
@@ -128,56 +129,55 @@ fn saw() -> (String, BoxedDynamicNode) {
 
 #[derive(Clone, Default)]
 pub struct DynamicGraph {
-    nodes: Vec<BoxedDynamicNode>,
-    output_node: usize,
-    edges: HashMap<usize, Vec<(usize, usize, usize)>>,
-    topo_sort: Vec<usize>,
+    nodes: HashMap<String, (BoxedDynamicNode, String)>,
+    output_node: Option<String>,
+    edges: HashMap<String, Vec<(usize, String, usize)>>,
+    topo_sort: Vec<String>,
+    pub reload_data: Arc<Mutex<Option<String>>>
 }
 
 impl DynamicGraph {
     pub fn process(&mut self) -> Value<(f32x8, f32x8)> {
         for node in &self.topo_sort {
-            self.nodes[*node].process();
+            self.nodes.get_mut(node).unwrap().0.process();
             if let Some(others) = self.edges.get(node) {
                 for (v1, other_node, v2) in others {
-                    let v = self.nodes[*node].get(*v1);
-                    self.nodes[*other_node].set(*v2, v);
+                    let v = self.nodes[node].0.get(*v1);
+                    self.nodes.get_mut(other_node).unwrap().0.set(*v2, v);
                 }
             }
         }
-        let n = &self.nodes[self.output_node];
-        Value((n.get(0), n.get(1)))
+        let n = &self.nodes[self.output_node.as_ref().unwrap()];
+        Value((n.0.get(0), n.0.get(1)))
     }
 
-    pub fn add_node<A: DynamicValue + Default + 'static, B:DynamicValue + Default + 'static, N: Node<Input=A, Output=B> + Clone + 'static>(&mut self, n: N) -> usize {
-        self.add_boxed_node(BoxedDynamicNode::new(n))
+    pub fn add_node<A: DynamicValue + Default + 'static, B:DynamicValue + Default + 'static, N: Node<Input=A, Output=B> + Clone + 'static>(&mut self, name: String, ty: String, n: N) {
+        self.add_boxed_node(name, ty, BoxedDynamicNode::new(n));
     }
-    pub fn add_boxed_node(&mut self, n: BoxedDynamicNode) -> usize {
-        let k = self.nodes.len();
-        self.nodes.push(n);
-        k
+    pub fn add_boxed_node(&mut self, name: String, ty: String, n: BoxedDynamicNode) {
+        self.nodes.insert(name, (n, ty));
     }
 
-    pub fn add_edge(&mut self, v1: usize, a: usize, v2: usize, b: usize) {
+    pub fn add_edge(&mut self, v1: usize, a: String, v2: usize, b: String) {
         let e = self.edges.entry(a).or_insert_with(|| vec![]);
         e.push((v1, b, v2));
     }
 
-    pub fn set_output_node(&mut self, n: usize) {
-        self.output_node = n;
+    pub fn set_output_node(&mut self, n: String) {
+        self.output_node = Some(n);
     }
 
     pub fn update_sort(&mut self) {
         let mut edges = self.edges.clone();
-        let mut nodes:HashSet<usize> = (0..self.nodes.len()).collect();
+        let mut nodes:HashSet<String> = self.nodes.keys().cloned().collect();
 
         self.topo_sort.clear();
         while !nodes.is_empty() {
             let mut to_remove = None;
             for node in &nodes {
                 if !edges.values().any(|a| a.iter().any(|(_, k, _)| k==node)) {
-                    self.topo_sort.push(*node);
-                    to_remove = Some(*node);
+                    self.topo_sort.push(node.clone());
+                    to_remove = Some(node.clone());
                     break;
                 }
             }
@@ -187,17 +187,77 @@ impl DynamicGraph {
         }
     }
 
+    pub fn reparse(&mut self, data: &str) {
+        let l = Self::parse_inner(data);
+
+        let modules: HashMap<_,_> = MODULES.iter().map(|f| f()).collect();
+        self.edges.clear();
+        self.output_node = None;
+        let mut nodes = HashMap::new();
+        for l in &l {
+            if let Line::Node(k, ty, _) = l {
+                let k = k.trim().to_string();
+                nodes.insert(k, ty);
+            }
+        }
+        self.nodes.retain(|k,v| nodes.get(k).map(|ty| &&v.1==ty).unwrap_or(false));
+        for l in &l {
+            match l {
+                Line::Node(k, ty, p) => {
+                    let k = k.trim().to_string();
+                    if !self.nodes.contains_key(&k) {
+                        let n = modules[ty].clone();
+                        self.add_boxed_node(k.clone(), ty.clone(), n);
+                    }
+                    let n = &mut self.nodes.get_mut(&k).unwrap().0;
+                    if let Some(ps) = p {
+                        for (i,p) in ps.iter().enumerate() {
+                            n.set(i, f32x8::splat(*p));
+                        }
+                    }
+                }
+                Line::Edge(c1, a, c, b) => self.add_edge(*c1 as usize, a.clone(), *c as usize, b.clone()),
+                Line::OutputNode(a) => self.set_output_node(a.clone()),
+                _ => ()
+            }
+        }
+        self.update_sort();
+    }
+
     pub fn parse(data: &str) -> Self {
+        let mut g = DynamicGraph::default();
+        g.reparse(data);
+        g
+    }
+
+    fn from_lines(l: Vec<Line>) -> Self {
+        let modules: HashMap<_,_> = MODULES.iter().map(|f| f()).collect();
+        let mut g = DynamicGraph::default();
+        for l in &l {
+            match l {
+                Line::Node(k, ty, p) => {
+                    let k = k.trim().to_string();
+                    let mut n = modules[ty].clone();
+                    if let Some(ps) = p {
+                        for (i,p) in ps.iter().enumerate() {
+                            n.set(i, f32x8::splat(*p));
+                        }
+                    }
+                    g.add_boxed_node(k, ty.clone(), n);
+                }
+                Line::Edge(c1, a, c, b) => g.add_edge(*c1 as usize, a.clone(), *c as usize, b.clone()),
+                Line::OutputNode(a) => g.set_output_node(a.clone()),
+                _ => ()
+            }
+        }
+        g.update_sort();
+        g
+    }
+
+    fn parse_inner(data: &str) -> Vec<Line> {
         use pom::parser::*;
         use pom::parser::Parser;
         use std::str::{self, FromStr};
-        #[derive(Debug)]
-        enum Line {
-            Node(String, String, Option<Vec<f32>>),
-            Edge(u32, String, u32, String),
-            OutputNode(String),
-            Comment,
-        }
         fn comment<'a>() -> Parser<'a, u8, Line> {
             (sym(b'#') * none_of(b"\n").repeat(0..)).map(|_| Line::Comment)
         }
@@ -228,33 +288,15 @@ impl DynamicGraph {
                 - sym(b')');
             p.map(|(((c1, a), c),b)| Line::Edge(c1, a, c, b))
         }
-        (list(output() | edge() | node() | comment(), sym(b'\n').repeat(1..)) - one_of(b" \n").repeat(0..)).map(|l| {
-            let modules: HashMap<_,_> = MODULES.iter().map(|f| f()).collect();
-            let mut g = DynamicGraph::default();
-            let mut nodes = HashMap::new();
-            for l in &l {
-                if let Line::Node(k, n, p) = l {
-                    let k = k.trim().to_string();
-                    let mut n = modules[n].clone();
-                    if let Some(ps) = p {
-                        for (i,p) in ps.iter().enumerate() {
-                            n.set(i, f32x8::splat(*p));
-                        }
-                    }
-                    nodes.insert(k, g.add_boxed_node(n));
-                }
-            }
-            for l in &l {
-                match l {
-                    Line::Edge(c1, a, c, b) => g.add_edge(*c1 as usize, nodes[a], *c as usize, nodes[b]),
-                    Line::OutputNode(a) => g.set_output_node(nodes[a]),
-                    _ => ()
-                }
-            }
-            g.update_sort();
-            g
-        }).parse(data.as_bytes()).unwrap()
+        (list(output() | edge() | node() | comment(), sym(b'\n').repeat(1..)) - one_of(b" \n").repeat(0..)).parse(data.as_bytes()).unwrap()
     }
+}
+#[derive(Debug)]
+enum Line {
+    Node(String, String, Option<Vec<f32>>),
+    Edge(u32, String, u32, String),
+    OutputNode(String),
+    Comment,
 }
 
 impl Node for DynamicGraph {
@@ -262,12 +304,19 @@ impl Node for DynamicGraph {
     type Output = Value<(f32x8, f32x8)>;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
+        let mut reparse_data = None;
+        if let Ok(mut d) = self.reload_data.lock() {
+            reparse_data = d.take();
+        }
+        if let Some(d) = reparse_data {
+            self.reparse(&d);
+        }
         self.process()
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
-        for node in &mut self.nodes {
-            node.set_sample_rate(rate);
+        for node in self.nodes.values_mut() {
+            node.0.set_sample_rate(rate);
         }
     }
 }
