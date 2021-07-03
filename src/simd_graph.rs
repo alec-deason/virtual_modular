@@ -562,7 +562,7 @@ where
 }
 
 #[distributed_slice(MODULES)]
-fn dynamic_ad() -> (String, BoxedDynamicNode) {
+fn dynamic_short_ad() -> (String, BoxedDynamicNode) {
     let f = move |t: f32, off_time: Option<f32>| {
         let attack = 0.05;
         let release = 0.1;
@@ -576,6 +576,22 @@ fn dynamic_ad() -> (String, BoxedDynamicNode) {
     let envelope = ThreshEnvelope::new(f);
     let n = BoxedDynamicNode::new(envelope);
     ("ad".to_string(), n)
+}
+#[distributed_slice(MODULES)]
+fn dynamic_pad_ad() -> (String, BoxedDynamicNode) {
+    let f = move |t: f32, off_time: Option<f32>| {
+        let attack = 0.5;
+        let release = 3.75;
+        0.2 * if t < attack {
+            (t / attack).min(1.0)
+        } else {
+            let t = t - attack;
+            1.0 - (t / release).min(1.0)
+        }
+    };
+    let envelope = ThreshEnvelope::new(f);
+    let n = BoxedDynamicNode::new(envelope);
+    ("pad_ad".to_string(), n)
 }
 
 #[derive(Clone)]
@@ -771,7 +787,7 @@ impl Node for WaveTable {
             if self.idx >= self.len {
                 self.idx -= self.len;
             }
-            r = unsafe { r.replace_unchecked(i, self.table[self.idx as usize]) };
+            r = unsafe { r.replace_unchecked(i, self.table[self.idx as usize % self.table.len()]) };
             self.idx += (input.0).0.extract(i) * d;
         }
         Value((r,))
@@ -2027,6 +2043,11 @@ impl Node for Stutter {
     fn set_sample_rate(&mut self, rate: f32) {
         self.delay.set_sample_rate(rate);
     }
+}
+#[distributed_slice(MODULES)]
+fn dynamic_stutter_reverb() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(Stutter::rand_pan(50, 0.35));
+    ("stutter_reverb".to_string(), n)
 }
 
 #[derive(Copy, Clone)]

@@ -292,6 +292,57 @@ impl DynamicValue for Value<((f32, f32), f32)> {
     fn len(&self) -> usize { 3 }
 }
 
+impl DynamicValue for Value<(f32x8, (f32x8, f32x8))> {
+    fn get(&self, i: usize) -> f32x8 {
+        let Value((a,(b,c))) = self.clone();
+        match i {
+            0 => a,
+            1 => b,
+            2 => c,
+            _ => panic!()
+        }
+    }
+
+    fn set(&mut self, i: usize, v: f32x8) {
+        let Value((a,(b,c))) = self.clone();
+        match i {
+            0 => { *self = Value((v,(b,c))); }
+            1 => { *self = Value((a,(v,c))); }
+            2 => { *self = Value((a,(b,v))); }
+            _ => panic!()
+        }
+    }
+
+    fn len(&self) -> usize { 3 }
+}
+
+impl DynamicValue for Value<((f32, f32), (f32, f32))> {
+    fn get(&self, i: usize) -> f32x8 {
+        let Value(((a,b),(c,d))) = self.clone();
+        f32x8::splat(match i {
+            0 => a,
+            1 => b,
+            2 => c,
+            3 => d,
+            _ => panic!()
+        })
+    }
+
+    fn set(&mut self, i: usize, v: f32x8) {
+        let Value(((a,b),(c,d))) = self.clone();
+        let v = v.max_element();
+        match i {
+            0 => { *self = Value(((v,b),(c,d))); }
+            1 => { *self = Value(((a,v),(c,d))); }
+            2 => { *self = Value(((a,b),(v,d))); }
+            3 => { *self = Value(((a,b),(c,v))); }
+            _ => panic!()
+        }
+    }
+
+    fn len(&self) -> usize { 4 }
+}
+
 impl DynamicValue for NoValue {
     fn get(&self, i: usize) -> f32x8 {
         panic!()

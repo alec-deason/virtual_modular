@@ -1353,7 +1353,7 @@ impl Node for ShiftRegister {
     type Output = Value<(f32x8,)>;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-let mut r = f32x8::splat(0.0);
+        let mut r = f32x8::splat(0.0);
          for i in 0..f32x8::lanes() {
              let gate = (input.0).0.extract(i);
              let signal = (input.0).1.extract(i);
@@ -1374,4 +1374,69 @@ let mut r = f32x8::splat(0.0);
          }
          Value((r,))
     }
+}
+
+#[derive(Clone)]
+pub struct SmoothLeader {
+    voices: [u32; 4],
+    scale: Vec<f32>,
+    triggered: bool,
+}
+
+impl SmoothLeader {
+    fn new() -> Self {
+        Self {
+            voices: [0, 2, 4, 6],
+            scale: vec![
+                220.0 * 1.0,
+                220.0 * 1.0594630943592953f32.powi(2),
+                220.0 * 1.0594630943592953f32.powi(4),
+                220.0 * 1.0594630943592953f32.powi(5),
+                220.0 * 1.0594630943592953f32.powi(7),
+                220.0 * 1.0594630943592953f32.powi(9),
+                220.0 * 1.0594630943592953f32.powi(10),
+            ],
+            triggered: false
+        }
+    }
+
+    fn advance(&mut self) {
+        let mut rng = thread_rng();
+        for v in &mut self.voices {
+            *v = (*v as i32 + rng.gen_range(-1..2)).max(0).min(self.scale.len() as i32-1) as u32;
+        }
+    }
+
+    fn pitches(&self) -> [f32; 4] {
+        [
+            self.scale[self.voices[0] as usize],
+            self.scale[self.voices[1] as usize],
+            self.scale[self.voices[2] as usize],
+            self.scale[self.voices[3] as usize],
+        ]
+    }
+}
+
+impl Node for SmoothLeader {
+    type Input = Value<(f32,)>;
+    type Output = Value<((f32, f32), (f32, f32))>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((gate,)) = input;
+        if gate > 0.5 {
+            if !self.triggered {
+                self.triggered = true;
+                self.advance();
+            }
+        } else {
+            self.triggered = false;
+        }
+        let pitches = self.pitches();
+        Value(((pitches[0], pitches[1]), (pitches[2], pitches[3])))
+    }
+}
+#[distributed_slice(MODULES)]
+fn dynamic_smooth_leader() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(SmoothLeader::new());
+    ("smooth_leader".to_string(), n)
 }
