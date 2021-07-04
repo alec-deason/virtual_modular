@@ -52,6 +52,7 @@ fn main() {
     };
 
     let reload_data = Arc::clone(&graph.reload_data);
+    let watch_list = Arc::clone(&graph.watch_list);
 
     let mut synth = builder.build_with_synth(graph);
 
@@ -71,13 +72,22 @@ fn main() {
     let mut last_change = std::time::SystemTime::now();
     loop {
         std::thread::sleep(std::time::Duration::from_millis(300));
-        if let Ok(metadata) = std::fs::metadata("/tmp/synth") {
-            if let Ok(modified) = metadata.modified() {
-                if modified > last_change {
-                    last_change = modified;
-                    reload_data.lock().unwrap().replace(std::fs::read_to_string("/tmp/synth").unwrap());
+        let mut ps:Vec<_> = watch_list.lock().unwrap().iter().cloned().collect();
+        ps.push("/tmp/synth".to_string());
+        let mut needs_reload = false;
+        for p in ps {
+            if let Ok(metadata) = std::fs::metadata(&p) {
+                if let Ok(modified) = metadata.modified() {
+                    if modified > last_change {
+                        needs_reload = true;
+                        last_change = modified;
+                        break
+                    }
                 }
             }
+        }
+        if needs_reload {
+            reload_data.lock().unwrap().replace(std::fs::read_to_string("/tmp/synth").unwrap());
         }
     }
 }

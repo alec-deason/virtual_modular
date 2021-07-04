@@ -567,15 +567,25 @@ fn dynamic_short_ad() -> (String, BoxedDynamicNode) {
         let attack = 0.05;
         let release = 0.1;
         if t < attack {
-            (t / attack).min(1.0)
+            (t / attack).min(1.0).powi(4)
         } else {
             let t = t - attack;
-            1.0 - (t / release).min(1.0)
+            1.0 - (t / release).min(1.0).powi(4)
         }
     };
     let envelope = ThreshEnvelope::new(f);
     let n = BoxedDynamicNode::new(envelope);
     ("ad".to_string(), n)
+}
+#[distributed_slice(MODULES)]
+fn dynamic_drum_ad() -> (String, BoxedDynamicNode) {
+    let f = move |t: f32, off_time: Option<f32>| {
+        let attack = 0.0961;
+        1.0-(t / attack).min(1.0).powf(0.3)
+    };
+    let envelope = ThreshEnvelope::new(f);
+    let n = BoxedDynamicNode::new(envelope);
+    ("drum_ad".to_string(), n)
 }
 #[distributed_slice(MODULES)]
 fn dynamic_pad_ad() -> (String, BoxedDynamicNode) {

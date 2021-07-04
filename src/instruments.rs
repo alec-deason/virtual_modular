@@ -1328,7 +1328,7 @@ impl Node for InlineSoftTuringMachine {
     }
 }
 #[distributed_slice(MODULES)]
-fn turing_machine() -> (String, BoxedDynamicNode) {
+fn dynamic_turing_machine() -> (String, BoxedDynamicNode) {
     let n = BoxedDynamicNode::new(InlineSoftTuringMachine::default());
     ("turing_machine".to_string(), n)
 }

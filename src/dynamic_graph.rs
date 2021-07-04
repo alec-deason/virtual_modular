@@ -145,11 +145,14 @@ pub static MODULES: [fn() -> (String, BoxedDynamicNode)] = [..];
 #[derive(Clone, Default)]
 pub struct DynamicGraph {
     nodes: HashMap<String, (BoxedDynamicNode, String)>,
-    output_node: Option<String>,
+    dynamic_nodes: HashMap<String, Box<DynamicGraph>>,
+    pub watch_list: Arc<Mutex<HashSet<String>>>,
     input: Vec<f32x8>,
+    output: (f32x8, f32x8),
     edges: HashMap<String, Vec<(usize, String, usize)>>,
     topo_sort: Vec<String>,
-    pub reload_data: Arc<Mutex<Option<String>>>
+    pub reload_data: Arc<Mutex<Option<String>>>,
+    sample_rate: f32,
 }
 
 impl DynamicGraph {
@@ -157,26 +160,49 @@ impl DynamicGraph {
         if let Some(others) = self.edges.get("input") {
             for (v1, other_node, v2) in others {
                 let v = self.input[*v1];
-                self.nodes.get_mut(other_node).expect(&format!("no definition for {}",other_node)).0.set(*v2, v);
+                if let Some(n) = self.nodes.get_mut(other_node) {
+                    n.0.set(*v2, v);
+                } else {
+                    self.dynamic_nodes.get_mut(other_node).expect(&format!("no definition for {}",other_node)).input[*v2] = v;
+                }
             }
         }
 
         for node in &self.topo_sort {
-            self.nodes.get_mut(node).unwrap().0.process();
+            if let Some(n) = self.nodes.get_mut(node) {
+                n.0.process();
+            } else {
+                self.dynamic_nodes.get_mut(node).unwrap().process();
+            }
             if let Some(others) = self.edges.get(node) {
                 for (v1, other_node, v2) in others {
-                    let v = self.nodes[node].0.get(*v1);
-                    self.nodes.get_mut(other_node).expect(&format!("no definition for {}",other_node)).0.set(*v2, v);
+                    let v = if let Some(n) = self.nodes.get_mut(node) {
+                        n.0.get(*v1)
+                    } else {
+                        let g = self.dynamic_nodes.get_mut(node).expect(&format!("no definition for {}",node));
+                        if *v1 == 0 {
+                            g.output.0
+                        } else {
+                            g.output.1
+                        }
+                    };
+                    if other_node == "output" {
+                        if *v2 == 0 {
+                            self.output.0 = v;
+                        } else {
+                            self.output.1 = v;
+                        }
+                    } else {
+                        if let Some(n) = self.nodes.get_mut(other_node) {
+                            n.0.set(*v2, v);
+                        } else {
+                            self.dynamic_nodes.get_mut(other_node).expect(&format!("no definition for {}",other_node)).input[*v2] = v;
+                        }
+                    }
                 }
             }
         }
-        let n = self.output_node.as_ref().expect("no output node set");
-        let n = &self.nodes.get(n).expect(&format!("Output node {} not defined", n));
-        if n.0.output_len() == 1 {
-            Value((n.0.get(0), n.0.get(0)))
-        } else {
-            Value((n.0.get(0), n.0.get(1)))
-        }
+        Value((self.output.0, self.output.1))
     }
 
     pub fn add_node<A: DynamicValue + Default + 'static, B:DynamicValue + Default + 'static, N: Node<Input=A, Output=B> + Clone + 'static>(&mut self, name: String, ty: String, n: N) {
@@ -191,13 +217,10 @@ impl DynamicGraph {
         e.push((v1, b, v2));
     }
 
-    pub fn set_output_node(&mut self, n: String) {
-        self.output_node = Some(n);
-    }
-
     pub fn update_sort(&mut self) {
         let mut edges = self.edges.clone();
         let mut nodes:HashSet<String> = self.nodes.keys().cloned().collect();
+        nodes.extend(self.dynamic_nodes.keys().cloned());
 
         self.topo_sort.clear();
         while !nodes.is_empty() {
@@ -218,9 +241,9 @@ impl DynamicGraph {
     fn reparse(&mut self, l: &[Line]) {
         let modules: HashMap<_,_> = MODULES.iter().map(|f| f()).collect();
         self.edges.clear();
-        self.output_node = None;
         let mut nodes = HashMap::new();
         let mut definitions = HashMap::new();
+        let mut watch_list = HashSet::new();
         for l in l {
             match l {
                 Line::Node(k, ty, _) => {
@@ -228,43 +251,56 @@ impl DynamicGraph {
                     nodes.insert(k, ty);
                 }
                 Line::NodeDefinition(k, l) => {
-                    let mut g = DynamicGraph::default();
-                    g.reparse(l);
-                    definitions.insert(k, g);
+                    definitions.insert(k, l);
                 }
                 Line::Input(len) => {
                     self.input.resize(*len as usize, f32x8::splat(0.0));
                 }
+                Line::Include(p) => { watch_list.insert(p.clone()); }
                 _ => ()
             }
         }
         self.nodes.retain(|k,v| nodes.get(k).map(|ty| &&v.1==ty).unwrap_or(false));
+        self.dynamic_nodes.retain(|k,v| nodes.contains_key(k));
         for l in l {
             match l {
                 Line::Node(k, ty, p) => {
                     let k = k.trim().to_string();
-                    if !self.nodes.contains_key(&k) {
+                    if let Some(g) = self.dynamic_nodes.get_mut(&k) {
+                        g.reparse(definitions.get(ty).unwrap());
+                    } if !self.nodes.contains_key(&k) {
                         if let Some(n) = modules.get(ty) {
                             self.add_boxed_node(k.clone(), ty.clone(), n.clone());
                         } else if let Some(n) = definitions.get(ty) {
-                            let n = BoxedDynamicNode(Box::new((n.clone(), RefCell::new([f32x8::splat(0.0), f32x8::splat(0.0)]))));
-                            self.add_boxed_node(k.clone(), ty.clone(), n);
+                            let mut g = DynamicGraph::default();
+                            g.reparse(n);
+                            watch_list.extend(g.watch_list.lock().unwrap().iter().cloned());
+                            g.set_sample_rate(self.sample_rate);
+                            self.dynamic_nodes.insert(k.clone(), Box::new(g));
                         } else {
                             panic!("No definition for {}", ty);
                         }
                     }
-                    let n = &mut self.nodes.get_mut(&k).unwrap().0;
-                    if let Some(ps) = p {
-                        for (i,p) in ps.iter().enumerate() {
-                            n.set(i, f32x8::splat(*p));
+                    if let Some(n) = self.nodes.get_mut(&k) {
+                        if let Some(ps) = p {
+                            for (i,p) in ps.iter().enumerate() {
+                                n.0.set(i, f32x8::splat(*p));
+                            }
+                        }
+                    } else {
+                        let g = self.dynamic_nodes.get_mut(&k).expect(&format!("no definition for {}",&k));
+                        if let Some(ps) = p {
+                            for (i,p) in ps.iter().enumerate() {
+                                g.input[i] = f32x8::splat(*p);
+                            }
                         }
                     }
                 }
                 Line::Edge(c1, a, c, b) => self.add_edge(*c1 as usize, a.clone(), *c as usize, b.clone()),
-                Line::OutputNode(a) => self.set_output_node(a.clone()),
                 _ => ()
             }
         }
+        *self.watch_list.lock().unwrap() = watch_list;
         self.update_sort();
     }
 
@@ -280,22 +316,24 @@ impl DynamicGraph {
         use pom::parser::*;
         use pom::parser::Parser;
         use std::str::{self, FromStr};
-        fn comment<'a>() -> Parser<'a, u8, Line> {
+        fn comment<'a>() -> Parser<'a, u8, Vec<Line>> {
             let comment = (sym(b'#') * none_of(b"\n").repeat(0..)) - sym(b'\n');
             let empty_line = (sym(b'\n')).repeat(1);
-            (comment | empty_line).map(|_| Line::Comment)
+            (comment | empty_line).map(|_| vec![Line::Comment])
         }
         fn outer_synth<'a>() -> Parser<'a, u8, Vec<Line>> {
-            (node_definition() | output() | edge() | node() | comment()).repeat(1..)
+            let p = (node_definition() | include() | edge() | node() | comment()).repeat(1..);
+            p.map(|ls| ls.into_iter().flatten().collect())
         }
         fn inner_synth<'a>() -> Parser<'a, u8, Vec<Line>> {
-            (input() | output() | edge() | node() | comment()).repeat(1..)
+            let p = (input() | include() | edge() | node() | comment()).repeat(1..);
+            p.map(|ls| ls.into_iter().flatten().collect())
         }
-        fn node_definition<'a>() -> Parser<'a, u8, Line> {
+        fn node_definition<'a>() -> Parser<'a, u8, Vec<Line>> {
             let p = (none_of(b"\n={,")).repeat(1..).convert(String::from_utf8) - sym(b'{') + inner_synth() - sym(b'}') - sym(b'\n');
-            p.map(|(name, lines)| Line::NodeDefinition(name, lines))
+            p.map(|(name, lines)| vec![Line::NodeDefinition(name, lines)])
         }
-        fn node<'a>() -> Parser<'a, u8, Line> {
+        fn node<'a>() -> Parser<'a, u8, Vec<Line>> {
             let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
             let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
             let exp = one_of(b"eE") + one_of(b"+-").opt() + one_of(b"0123456789").repeat(1..);
@@ -306,18 +344,21 @@ impl DynamicGraph {
                 .convert(f32::from_str);
 
             let parameter = (sym(b'(') * list(number, sym(b',')) - sym(b')')).opt();
-            ((none_of(b"\n=(),")).repeat(1..).convert(String::from_utf8) - sym(b'=') + (none_of(b"(),\n")).repeat(1..).convert(String::from_utf8) + parameter - sym(b'\n')).map(|((k, n), p)| Line::Node(k, n, p))
+            ((none_of(b"\n=(),")).repeat(1..).convert(String::from_utf8) - sym(b'=') + (none_of(b"(),\n")).repeat(1..).convert(String::from_utf8) + parameter - sym(b'\n')).map(|((k, n), p)| vec![Line::Node(k, n, p)])
         }
-        fn output<'a>() -> Parser<'a, u8, Line> {
-            let p = seq(b"output(") * none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b')') - sym(b'\n');
-            p.map(|k| Line::OutputNode(k))
+        fn include<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let p = seq(b"include(") * none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b')') - sym(b'\n');
+            p.map(|k| {
+                let data = std::fs::read_to_string(k.clone()).unwrap();
+                DynamicGraph::parse_inner(&data).into_iter().chain(vec![Line::Include(k)]).collect()
+            })
         }
-        fn input<'a>() -> Parser<'a, u8, Line> {
+        fn input<'a>() -> Parser<'a, u8, Vec<Line>> {
             let integer = one_of(b"0123456789").repeat(1..);
             let p = seq(b"input(") * integer.collect().convert(str::from_utf8).convert(u32::from_str) - sym(b')') - sym(b'\n');
-            p.map(|k| Line::Input(k))
+            p.map(|k| vec![Line::Input(k)])
         }
-        fn edge<'a>() -> Parser<'a, u8, Line> {
+        fn edge<'a>() -> Parser<'a, u8, Vec<Line>> {
             let p = sym(
                 b'(') *
                 one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - sym(b',') +
@@ -325,7 +366,7 @@ impl DynamicGraph {
                 one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - sym(b',') +
                 (none_of(b")")).repeat(1..).convert(String::from_utf8)
                 - sym(b')') - sym(b'\n');
-            p.map(|(((c1, a), c),b)| Line::Edge(c1, a, c, b))
+            p.map(|(((c1, a), c),b)| vec![Line::Edge(c1, a, c, b)])
         }
         outer_synth().parse(data.as_bytes()).unwrap()
     }
@@ -335,8 +376,8 @@ enum Line {
     Node(String, String, Option<Vec<f32>>),
     NodeDefinition(String, Vec<Line>),
     Edge(u32, String, u32, String),
-    OutputNode(String),
     Input(u32),
+    Include(String),
     Comment,
 }
 
@@ -357,8 +398,12 @@ impl Node for DynamicGraph {
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
+        self.sample_rate = rate;
         for node in self.nodes.values_mut() {
             node.0.set_sample_rate(rate);
+        }
+        for node in self.dynamic_nodes.values_mut() {
+            node.set_sample_rate(rate);
         }
     }
 }
