@@ -217,7 +217,7 @@ impl DynamicGraph {
         e.push((v1, b, v2));
     }
 
-    pub fn update_sort(&mut self) {
+    pub fn update_sort(&mut self) -> Result<(), String> {
         let mut edges = self.edges.clone();
         let mut nodes:HashSet<String> = self.nodes.keys().cloned().collect();
         nodes.extend(self.dynamic_nodes.keys().cloned());
@@ -232,13 +232,14 @@ impl DynamicGraph {
                     break;
                 }
             }
-            let node = to_remove.expect("Graph must not contain cycles");
+            let node = to_remove.ok_or("Graph must not contain cycles".to_string())?;
             edges.remove(&node);
             nodes.remove(&node);
         }
+        Ok(())
     }
 
-    fn reparse(&mut self, l: &[Line]) {
+    fn reparse(&mut self, l: &[Line]) -> Result<(), String> {
         let modules: HashMap<_,_> = MODULES.iter().map(|f| f()).collect();
         self.edges.clear();
         let mut nodes = HashMap::new();
@@ -278,7 +279,7 @@ impl DynamicGraph {
                             g.set_sample_rate(self.sample_rate);
                             self.dynamic_nodes.insert(k.clone(), Box::new(g));
                         } else {
-                            panic!("No definition for {}", ty);
+                            return Err(format!("No definition for {}", ty));
                         }
                     }
                     if let Some(n) = self.nodes.get_mut(&k) {
@@ -288,7 +289,7 @@ impl DynamicGraph {
                             }
                         }
                     } else {
-                        let g = self.dynamic_nodes.get_mut(&k).expect(&format!("no definition for {}",&k));
+                        let g = self.dynamic_nodes.get_mut(&k).ok_or_else(|| format!("no definition for {}",&k))?;
                         if let Some(ps) = p {
                             for (i,p) in ps.iter().enumerate() {
                                 g.input[i] = f32x8::splat(*p);
@@ -300,19 +301,57 @@ impl DynamicGraph {
                 _ => ()
             }
         }
+        for (src, es) in &self.edges {
+            for (src_i, dst, dst_i) in es {
+                if let Some(n) = self.nodes.get(src) {
+                    if *src_i > n.0.output_len() {
+                        return Err(format!("misconfigured edge: {:?}", (src, (src_i, dst, dst_i))));
+                    }
+                } else if let Some(n) = self.dynamic_nodes.get(src) {
+                    if *src_i > 2 {
+                        return Err(format!("misconfigured edge: {:?}", (src, (src_i, dst, dst_i))));
+                    }
+                } else {
+                    if src == "input" {
+                        if *src_i > 2 {
+                            return Err(format!("misconfigured edge: {:?}", (src, (src_i, dst, dst_i))));
+                        }
+                    } else {
+                        return Err(format!("missing node: {}", src));
+                    }
+                }
+                if let Some(n) = self.nodes.get(dst) {
+                    if *dst_i > n.0.input_len() {
+                        return Err(format!("misconfigured edge: {:?}", (src, (src_i, dst, dst_i))));
+                    }
+                } else if let Some(n) = self.dynamic_nodes.get(dst) {
+                    if *dst_i > 2 {
+                        return Err(format!("misconfigured edge: {:?}", (src, (src_i, dst, dst_i))));
+                    }
+                } else {
+                    if dst == "output" {
+                        if *dst_i > 2 {
+                            return Err(format!("misconfigured edge: {:?}", (src, (src_i, dst, dst_i))));
+                        }
+                    } else {
+                        return Err(format!("missing node: {}", dst));
+                    }
+                }
+            }
+        }
         *self.watch_list.lock().unwrap() = watch_list;
-        self.update_sort();
+        self.update_sort()
     }
 
-    pub fn parse(data: &str) -> Self {
+    pub fn parse(data: &str) -> Result<Self, String> {
         let mut g = DynamicGraph::default();
-        let l = Self::parse_inner(data);
+        let l = Self::parse_inner(data)?;
 
-        g.reparse(&l);
-        g
+        g.reparse(&l)?;
+        Ok(g)
     }
 
-    fn parse_inner(data: &str) -> Vec<Line> {
+    fn parse_inner(data: &str) -> Result<Vec<Line>, String> {
         use pom::parser::*;
         use pom::parser::Parser;
         use std::str::{self, FromStr};
@@ -348,9 +387,9 @@ impl DynamicGraph {
         }
         fn include<'a>() -> Parser<'a, u8, Vec<Line>> {
             let p = seq(b"include(") * none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b')') - sym(b'\n');
-            p.map(|k| {
+            p.convert::<_, String, _>(|k| {
                 let data = std::fs::read_to_string(k.clone()).unwrap();
-                DynamicGraph::parse_inner(&data).into_iter().chain(vec![Line::Include(k)]).collect()
+                Ok(DynamicGraph::parse_inner(&data)?.into_iter().chain(vec![Line::Include(k)]).collect())
             })
         }
         fn input<'a>() -> Parser<'a, u8, Vec<Line>> {
@@ -368,7 +407,7 @@ impl DynamicGraph {
                 - sym(b')') - sym(b'\n');
             p.map(|(((c1, a), c),b)| vec![Line::Edge(c1, a, c, b)])
         }
-        outer_synth().parse(data.as_bytes()).unwrap()
+        outer_synth().parse(data.as_bytes()).map_err(|e| format!("{:?}", e))
     }
 }
 #[derive(Debug)]
@@ -392,7 +431,17 @@ impl Node for DynamicGraph {
         }
         if let Some(d) = reparse_data {
             let l = Self::parse_inner(&d);
-            self.reparse(&l);
+            if let Ok(l) = l {
+                let mut g = self.clone();
+                let r = g.reparse(&l);
+                if r.is_err() {
+                    println!("{:?}", r);
+                } else {
+                    *self = g;
+                }
+            } else {
+                println!("{:?}", l);
+            }
         }
         self.process()
     }
@@ -413,6 +462,10 @@ use crate::simd_graph::*;
 #[distributed_slice(MODULES)]
 fn dynamic_sine() -> (String, BoxedDynamicNode) {
     ("sine".to_string(), BoxedDynamicNode::new(WaveTable::sine()))
+}
+#[distributed_slice(MODULES)]
+fn dynamic_psine() -> (String, BoxedDynamicNode) {
+    ("psine".to_string(), BoxedDynamicNode::new(WaveTable::positive_sine()))
 }
 #[distributed_slice(MODULES)]
 fn dynamic_saw() -> (String, BoxedDynamicNode) {

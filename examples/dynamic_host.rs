@@ -36,19 +36,21 @@ enveloped_tone=mul
 # Final
 filter=lpf(440,0.7)
 (0,enveloped_tone,2,filter)
-stereo_signal=split
-(0,filter,0,stereo_signal)
 
-output(stereo_signal)";
+(0,filter,0,output)
+(0,filter,1,output)
+";
 
 
 fn main() {
+    let synth_path = std::env::args().nth(1);
+
     let mut builder = InstrumentSynth::builder();
 
-    let mut graph = if let Ok(synth_data) = std::fs::read_to_string("/tmp/synth") {
-        DynamicGraph::parse(&synth_data)
+    let mut graph = if let Some(synth_data) = synth_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+        DynamicGraph::parse(&synth_data).unwrap()
     } else {
-        DynamicGraph::parse(DEFAULT_SYNTH)
+        DynamicGraph::parse(DEFAULT_SYNTH).unwrap()
     };
 
     let reload_data = Arc::clone(&graph.reload_data);
@@ -72,22 +74,24 @@ fn main() {
     let mut last_change = std::time::SystemTime::now();
     loop {
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let mut ps:Vec<_> = watch_list.lock().unwrap().iter().cloned().collect();
-        ps.push("/tmp/synth".to_string());
-        let mut needs_reload = false;
-        for p in ps {
-            if let Ok(metadata) = std::fs::metadata(&p) {
-                if let Ok(modified) = metadata.modified() {
-                    if modified > last_change {
-                        needs_reload = true;
-                        last_change = modified;
-                        break
+        if let Some(synth_path) = &synth_path {
+            let mut ps:Vec<_> = watch_list.lock().unwrap().iter().cloned().collect();
+            ps.push(synth_path.to_string());
+            let mut needs_reload = false;
+            for p in ps {
+                if let Ok(metadata) = std::fs::metadata(&p) {
+                    if let Ok(modified) = metadata.modified() {
+                        if modified > last_change {
+                            needs_reload = true;
+                            last_change = modified;
+                            break
+                        }
                     }
                 }
             }
-        }
-        if needs_reload {
-            reload_data.lock().unwrap().replace(std::fs::read_to_string("/tmp/synth").unwrap());
+            if needs_reload {
+                reload_data.lock().unwrap().replace(std::fs::read_to_string(synth_path).unwrap());
+            }
         }
     }
 }
