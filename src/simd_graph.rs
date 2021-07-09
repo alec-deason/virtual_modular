@@ -1026,9 +1026,14 @@ impl Biquad {
     }
 }
 #[distributed_slice(MODULES)]
-fn lpf() -> (String, BoxedDynamicNode) {
+fn dynamic_lpf() -> (String, BoxedDynamicNode) {
     let n = BoxedDynamicNode::new(Biquad::lowpass());
     ("lpf".to_string(), n)
+}
+#[distributed_slice(MODULES)]
+fn dynamic_hpf() -> (String, BoxedDynamicNode) {
+    let n = BoxedDynamicNode::new(Biquad::highpass());
+    ("hpf".to_string(), n)
 }
 
 impl Node for Biquad {

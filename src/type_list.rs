@@ -195,6 +195,7 @@ impl Combine<NoValue, NoValue> for (NoValue, NoValue) {
 pub trait DynamicValue:ValueT {
     fn get(&self, i: usize) -> f32x8;
     fn set(&mut self, i: usize, v: f32x8);
+    fn add(&mut self, i: usize, v: f32x8);
     fn len(&self) -> usize;
 }
 
@@ -208,6 +209,10 @@ impl DynamicValue for Value<(f32x8,)> {
         assert_eq!(i, 0);
         (self.0).0 = v;
     }
+    fn add(&mut self, i: usize, v: f32x8) {
+        assert_eq!(i, 0);
+        (self.0).0 += v;
+    }
     fn len(&self) -> usize { 1 }
 }
 impl DynamicValue for Value<(f32,)> {
@@ -219,6 +224,10 @@ impl DynamicValue for Value<(f32,)> {
     fn set(&mut self, i: usize, v: f32x8) {
         assert_eq!(i, 0);
         (self.0).0 = v.max_element();
+    }
+    fn add(&mut self, i: usize, v: f32x8) {
+        assert_eq!(i, 0);
+        (self.0).0 += v.max_element();
     }
     fn len(&self) -> usize { 1 }
 }
@@ -240,6 +249,13 @@ impl DynamicValue for Value<(f32x8, f32x8)> {
         }
     }
 
+    fn add(&mut self, i: usize, v: f32x8) {
+        match i {
+            0 => (self.0).0 += v,
+            1 => (self.0).1 += v,
+            _ => panic!()
+        }
+    }
     fn len(&self) -> usize { 2 }
 }
 
@@ -260,6 +276,16 @@ impl DynamicValue for Value<((f32x8, f32x8), f32x8)> {
             0 => { *self = Value(((v,b),c)); }
             1 => { *self = Value(((a,v),c)); }
             2 => { *self = Value(((a,b),v)); }
+            _ => panic!()
+        }
+    }
+
+    fn add(&mut self, i: usize, v: f32x8) {
+        let Value(((a,b),c)) = self.clone();
+        match i {
+            0 => { *self = Value(((a+v,b),c)); }
+            1 => { *self = Value(((a,b+v),c)); }
+            2 => { *self = Value(((a,b),c+v)); }
             _ => panic!()
         }
     }
@@ -289,6 +315,17 @@ impl DynamicValue for Value<((f32, f32), f32)> {
         }
     }
 
+    fn add(&mut self, i: usize, v: f32x8) {
+        let Value(((a,b),c)) = self.clone();
+        let v = v.max_element();
+        match i {
+            0 => { *self = Value(((a+v,b),c)); }
+            1 => { *self = Value(((a,b+v),c)); }
+            2 => { *self = Value(((a,b),c+v)); }
+            _ => panic!()
+        }
+    }
+
     fn len(&self) -> usize { 3 }
 }
 
@@ -309,6 +346,16 @@ impl DynamicValue for Value<(f32x8, (f32x8, f32x8))> {
             0 => { *self = Value((v,(b,c))); }
             1 => { *self = Value((a,(v,c))); }
             2 => { *self = Value((a,(b,v))); }
+            _ => panic!()
+        }
+    }
+
+    fn add(&mut self, i: usize, v: f32x8) {
+        let Value((a,(b,c))) = self.clone();
+        match i {
+            0 => { *self = Value((a+v,(b,c))); }
+            1 => { *self = Value((a,(b+v,c))); }
+            2 => { *self = Value((a,(b,c+v))); }
             _ => panic!()
         }
     }
@@ -340,6 +387,18 @@ impl DynamicValue for Value<((f32, f32), (f32, f32))> {
         }
     }
 
+    fn add(&mut self, i: usize, v: f32x8) {
+        let Value(((a,b),(c,d))) = self.clone();
+        let v = v.max_element();
+        match i {
+            0 => { *self = Value(((a+v,b),(c,d))); }
+            1 => { *self = Value(((a,b+v),(c,d))); }
+            2 => { *self = Value(((a,b),(c+v,d))); }
+            3 => { *self = Value(((a,b),(c,d+v))); }
+            _ => panic!()
+        }
+    }
+
     fn len(&self) -> usize { 4 }
 }
 
@@ -349,6 +408,9 @@ impl DynamicValue for NoValue {
     }
 
     fn set(&mut self, i: usize, v: f32x8) {
+        panic!()
+    }
+    fn add(&mut self, i: usize, v: f32x8) {
         panic!()
     }
 
