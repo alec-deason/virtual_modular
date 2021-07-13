@@ -2,10 +2,17 @@ use dyn_clone::DynClone;
 use packed_simd_2::{f32x8, u32x8};
 use rand::prelude::*;
 use linkme::distributed_slice;
-use std::{cell::RefCell, f32::consts::TAU, marker::PhantomData, rc::Rc};
+use portmidi as pm;
+use std::{
+    cell::RefCell,
+    f32::consts::{PI,TAU},
+    marker::PhantomData,
+    rc::Rc,
+    convert::TryFrom,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
-    dynamic_graph::{BoxedDynamicNode, MODULES},
     type_list::{Combine, NoValue, Value, ValueT, DynamicValue},
 };
 
@@ -13,6 +20,7 @@ pub trait Node: DynClone {
     type Input: ValueT;
     type Output: ValueT;
     fn process(&mut self, input: Self::Input) -> Self::Output;
+    fn post_process(&mut self) {}
     fn set_sample_rate(&mut self, rate: f32) {}
 }
 dyn_clone::clone_trait_object!(<A, B> Node<Input=A, Output=B>);
@@ -138,16 +146,6 @@ where
     fn process(&mut self, input: Self::Input) -> Self::Output {
         Value((*input.car() + input.cdr().clone(),))
     }
-}
-#[distributed_slice(MODULES)]
-fn add() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(Add::<f32x8, f32x8>::default());
-    ("add".to_string(), n)
-}
-#[distributed_slice(MODULES)]
-fn mul() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(Mul::<f32x8, f32x8>::default());
-    ("mul".to_string(), n)
 }
 #[derive(Copy, Clone)]
 pub struct Sub<A, B>(PhantomData<A>, PhantomData<B>);
@@ -561,48 +559,100 @@ where
     }
 }
 
-#[distributed_slice(MODULES)]
-fn dynamic_short_ad() -> (String, BoxedDynamicNode) {
-    let f = move |t: f32, off_time: Option<f32>| {
-        let attack = 0.05;
-        let release = 0.1;
-        if t < attack {
-            (t / attack).min(1.0).powi(4)
-        } else {
-            let t = t - attack;
-            1.0 - (t / release).min(1.0).powi(4)
+#[derive(Copy,Clone,Default)]
+pub struct InlineADEnvelope {
+    time: f32,
+    triggered: bool,
+    per_sample: f32
+}
+impl Node for InlineADEnvelope {
+    type Input = Value<((f32x8, f32x8), f32x8,)>;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value(((attack, decay), gate)) = input;
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let attack = attack.extract(i);
+            let decay = decay.extract(i);
+            let gate = gate.extract(i);
+            if gate > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.time = 0.0;
+                }
+            } else {
+                if self.triggered {
+                    self.triggered = false
+                }
+            }
+            self.time += self.per_sample;
+            if self.time < attack {
+                r=r.replace(i, self.time/attack);
+            } else if self.time < attack+decay {
+                let t = (self.time - attack) / decay;
+                r=r.replace(i, 1.0-t);
+            }
         }
-    };
-    let envelope = ThreshEnvelope::new(f);
-    let n = BoxedDynamicNode::new(envelope);
-    ("ad".to_string(), n)
+
+        Value((r,))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0 / rate;
+    }
 }
-#[distributed_slice(MODULES)]
-fn dynamic_drum_ad() -> (String, BoxedDynamicNode) {
-    let f = move |t: f32, off_time: Option<f32>| {
-        let attack = 0.0961;
-        1.0-(t / attack).min(1.0).powf(0.3)
-    };
-    let envelope = ThreshEnvelope::new(f);
-    let n = BoxedDynamicNode::new(envelope);
-    ("drum_ad".to_string(), n)
+
+
+#[derive(Copy,Clone,Default)]
+pub struct InlineASDEnvelope {
+    time: f32,
+    triggered: bool,
+    per_sample: f32
 }
-#[distributed_slice(MODULES)]
-fn dynamic_pad_ad() -> (String, BoxedDynamicNode) {
-    let f = move |t: f32, off_time: Option<f32>| {
-        let attack = 0.5;
-        let release = 3.75;
-        0.2 * if t < attack {
-            (t / attack).min(1.0)
-        } else {
-            let t = t - attack;
-            1.0 - (t / release).min(1.0)
+impl Node for InlineASDEnvelope {
+    type Input = Value<((f32x8, f32x8), f32x8,)>;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value(((attack, decay), gate)) = input;
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let attack = attack.extract(i);
+            let decay = decay.extract(i);
+            let gate = gate.extract(i);
+            if gate > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.time = 0.0;
+                }
+            } else {
+                if self.triggered {
+                    self.triggered = false;
+                    self.time = 0.0;
+                }
+            }
+            self.time += self.per_sample;
+            if self.triggered {
+                if self.time < attack {
+                    r = r.replace(i, self.time/attack);
+                } else {
+                    r = r.replace(i, 1.0);
+                }
+            } else if self.time < decay {
+                let t = self.time / decay;
+                r=r.replace(i, 1.0-t);
+            }
         }
-    };
-    let envelope = ThreshEnvelope::new(f);
-    let n = BoxedDynamicNode::new(envelope);
-    ("pad_ad".to_string(), n)
+
+        Value((r,))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0 / rate;
+    }
 }
+
 
 #[derive(Clone)]
 pub struct Unison<A: Clone> {
@@ -773,7 +823,7 @@ impl WaveTable {
     }
 
     pub fn noise() -> Self {
-        let mut rng = thread_rng();
+        let mut rng = StdRng::seed_from_u64(2);
         let table: Vec<f32> = (0..1024 * 1000).map(|_| rng.gen_range(-1.0..1.0)).collect();
         Self {
             len: table.len() as f32,
@@ -818,11 +868,6 @@ impl Node for Split {
     fn process(&mut self, input: Self::Input) -> Self::Output {
         Value((*input.car(), *input.car()))
     }
-}
-#[distributed_slice(MODULES)]
-fn split() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(Split);
-    ("split".to_string(), n)
 }
 
 #[derive(Clone, Default)]
@@ -928,7 +973,7 @@ impl BiquadConfig {
                     a2: (1.0 - alpha / a) as f64,
                     b0: (1.0 + alpha * a) as f64,
                     b1: (-2.0 * omega.cos()) as f64,
-                    b2: (1.0 - alpha / a) as f64,
+                    b2: (1.0 - alpha * a) as f64,
                 }
             }
         }
@@ -1011,30 +1056,27 @@ impl Biquad {
         }
     }
 
-    pub fn peaking_eq(db_gain: Rc<RefCell<(f32,)>>) -> Self {
-        Self {
-            config: BiquadConfig::PeakingEq(db_gain),
-            coefficients: Default::default(),
+    pub fn peaking_eq() -> PeakingEq {
+        let db_gain =  Rc::new(RefCell::new((0.0,)));
+        PeakingEq(
+            Self {
+                config: BiquadConfig::PeakingEq(db_gain.clone()),
+                coefficients: Default::default(),
 
-            x1: 0.0,
-            x2: 0.0,
-            y1: 0.0,
-            y2: 0.0,
+                x1: 0.0,
+                x2: 0.0,
+                y1: 0.0,
+                y2: 0.0,
 
-            sample_rate: 44100.0,
-        }
+                sample_rate: 44100.0,
+            },
+            db_gain
+        )
     }
 }
-#[distributed_slice(MODULES)]
-fn dynamic_lpf() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(Biquad::lowpass());
-    ("lpf".to_string(), n)
-}
-#[distributed_slice(MODULES)]
-fn dynamic_hpf() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(Biquad::highpass());
-    ("hpf".to_string(), n)
-}
+#[derive(Clone)]
+pub struct PeakingEq(Biquad, Rc<RefCell<(f32,)>>);
+
 
 impl Node for Biquad {
     type Input = Value<((f32x8, f32x8), f32x8)>;
@@ -1049,13 +1091,11 @@ impl Node for Biquad {
             let freq = freq.extract(i);
             let q = q.extract(i);
             self.coefficients = self.config.coefficients(freq, q, self.sample_rate);
-            //println!("{} {:?}", self.sample_rate, self.coefficients);
             let y = (self.coefficients.b0 / self.coefficients.a0) * x
                 + (self.coefficients.b1 / self.coefficients.a0) * self.x1
                 + (self.coefficients.b2 / self.coefficients.a0) * self.x2
                 - (self.coefficients.a1 / self.coefficients.a0) * self.y1
                 - (self.coefficients.a2 / self.coefficients.a0) * self.y2;
-            //println!("{} {} {} {} {} {}", x, self.x1, self.x2, y, self.y1, self.y2);
             self.x2 = self.x1;
             self.x1 = x;
             self.y2 = self.y1;
@@ -1067,6 +1107,22 @@ impl Node for Biquad {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate;
+    }
+}
+
+impl Node for PeakingEq {
+    type Input = Value<((f32x8, f32x8), (f32x8,f32x8))>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value(((db_gain, freq), (q, signal))) = input;
+        *self.1.borrow_mut() = (db_gain.max_element(),);
+        self.0.process(Value(((freq,q), signal)))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.0.set_sample_rate(rate);
     }
 }
 
@@ -1400,9 +1456,9 @@ impl Node for GateSequencer {
 }
 
 #[derive(Clone)]
-pub struct Sequencer<A>(Rc<RefCell<Vec<A>>>, usize, bool);
+pub struct Sequencer<A>(Vec<A>, usize, bool);
 impl<A> Sequencer<A> {
-    pub fn new(values: Rc<RefCell<Vec<A>>>) -> Self {
+    pub fn new(values: Vec<A>) -> Self {
         Self(values, 0, false)
     }
 }
@@ -1412,15 +1468,14 @@ impl<A: Clone> Node for Sequencer<A> {
 
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-        let seq = self.0.borrow();
         let gate = (input.0).0.extract(0);
         if !self.2 && gate > 0.5 {
-            self.1 = (self.1 + 1) % seq.len();
+            self.1 = (self.1 + 1) % self.0.len();
             self.2 = true;
         } else if gate < 0.5 {
             self.2 = false;
         }
-        Value((seq[self.1 % seq.len()].clone(),))
+        Value((self.0[self.1 % self.0.len()].clone(),))
     }
 }
 
@@ -1507,6 +1562,7 @@ impl Node for AllPass {
     }
 }
 
+
 #[derive(Copy, Clone)]
 pub struct Flip<A, B>(PhantomData<A>, PhantomData<B>);
 impl<A, B> Default for Flip<A, B> {
@@ -1572,12 +1628,13 @@ impl Node for Mix {
 pub struct PulseDivider(u32, bool);
 
 impl Node for PulseDivider {
-    type Input = Value<(u32, f32x8)>;
+    type Input = Value<(f32, f32x8)>;
     type Output = Value<(f32x8,)>;
 
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
         let Value((division, gate)) = input;
+        let division = division as u32;
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let gate = gate.extract(i);
@@ -1600,36 +1657,26 @@ impl Node for PulseDivider {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone,Default)]
 pub struct Compressor {
-    threshold: f32,
     time: f32,
     decaying: bool,
     per_sample: f32,
 }
-impl Compressor {
-    pub fn new(threshold: f32) -> Self {
-        Self {
-            threshold,
-            time: 0.0,
-            decaying: false,
-            per_sample: 0.0,
-        }
-    }
-}
 impl Node for Compressor {
-    type Input = Value<(f32x8, f32x8)>;
+    type Input = Value<(f32x8, (f32x8, f32x8))>;
     type Output = Value<(f32x8, f32x8)>;
 
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((left, right)) = input;
+        let Value((amount, (left, right))) = input;
         let mut l = f32x8::splat(0.0);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let left = left.extract(i);
             let right = right.extract(i);
-            if left.abs() > self.threshold || right.abs() > self.threshold {
+            let amount = amount.extract(i);
+            if left.abs() > amount || right.abs() > amount {
                 if self.decaying {
                     self.decaying = false;
                     self.time = 0.0;
@@ -1809,11 +1856,6 @@ impl<A> Default for Log<A> {
     fn default() -> Self {
         Self(Default::default())
     }
-}
-#[distributed_slice(MODULES)]
-fn dynamic_log() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(Log::<Value<(f32x8,)>>::default());
-    ("log".to_string(), n)
 }
 
 impl<A: ValueT + std::fmt::Debug> Node for Log<A> {
@@ -2046,11 +2088,18 @@ impl Node for Stutter {
             let d = d*len_mult.max_element();
             let p = self.pans[i as usize];
             let m = f32x8::splat((1.0 - ((i as f32 + 1.0) / self.count as f32)).powi(3));
-            let i = (i as f32 * d) as usize;
+            let i = i as f32 * d;
+            let f = i.fract();
+            let j = i.ceil() as usize;
+            let i = i.floor() as usize;
             let i = ((self.delay.0.idx + (self.delay).0.buffer.len()) - i)
                 % (self.delay).0.buffer.len();
-            l += (self.delay).0.buffer[i] * m * f32x8::splat(p);
-            r += (self.delay).1.buffer[i] * m * f32x8::splat(1.0 - p);
+            let j = ((self.delay.0.idx + (self.delay).0.buffer.len()) - j)
+                % (self.delay).0.buffer.len();
+            let v = (self.delay).0.buffer[i] * (1.0-f) + (self.delay).0.buffer[j] * f;
+            l += v * m * f32x8::splat(p);
+            let v = (self.delay).1.buffer[i] * (1.0-f) + (self.delay).1.buffer[j] * f;
+            r += v * m * f32x8::splat(1.0 - p);
         }
         Value((l, r))
     }
@@ -2058,11 +2107,6 @@ impl Node for Stutter {
     fn set_sample_rate(&mut self, rate: f32) {
         self.delay.set_sample_rate(rate);
     }
-}
-#[distributed_slice(MODULES)]
-fn dynamic_stutter_reverb() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(Stutter::rand_pan(50, 0.35));
-    ("stutter_reverb".to_string(), n)
 }
 
 #[derive(Copy, Clone)]
@@ -2102,11 +2146,6 @@ impl Node for ModulatedRescale {
         v += min;
         Value((v,))
     }
-}
-#[distributed_slice(MODULES)]
-fn rescale() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(ModulatedRescale);
-    ("rescale".to_string(), n)
 }
 
 #[derive(Copy, Clone)]
@@ -2550,9 +2589,9 @@ impl Node for StereoBoost {
 }
 
 #[derive(Copy, Clone)]
-pub struct SumSequencer(fn() -> [(u32, f32); 4], u32, bool);
+pub struct SumSequencer([(u32, f32); 4], u32, bool);
 impl SumSequencer {
-    pub fn new(f: fn() -> [(u32, f32); 4]) -> Self {
+    pub fn new(f:[(u32, f32); 4]) -> Self {
         Self(f, 0, false)
     }
 }
@@ -2570,7 +2609,7 @@ impl Node for SumSequencer {
                 if !self.2 {
                     self.2 = true;
                     self.1 += 1;
-                    if self.0().iter().any(|(d,p)| *d != 0 && self.1 % d == 0 && thread_rng().gen::<f32>() < *p) {
+                    if self.0.iter().any(|(d,p)| *d != 0 && self.1 % d == 0 && thread_rng().gen::<f32>() < *p) {
                         r = r.replace(i, 10.0);
                     }
                 }
@@ -2644,5 +2683,281 @@ impl Node for Automation {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = f32x8::lanes() as f32 / rate;
+    }
+}
+
+
+#[derive(Copy,Clone)]
+pub struct SoftClip;
+impl Node for SoftClip {
+    type Input = Value<(f32x8, f32x8)>;
+    type Output = Value<(f32x8,f32x8)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((l,r)) = input;
+        Value((l.tanh(), r.tanh()))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Looper {
+    samples: Vec<(f32x8,f32x8)>,
+    triggered: bool,
+    idx: f32
+}
+impl Node for Looper {
+    type Input = Value<((f32, f32), (f32x8,f32x8))>;
+    type Output = Value<(f32x8,f32x8)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value(((gate, speed), signal)) = input;
+        if gate > 0.5 {
+            if !self.triggered {
+                self.triggered = true;
+                self.samples.clear();
+                self.idx=0.0;
+            }
+            self.samples.push(signal);
+            Value(signal)
+        } else {
+            self.triggered = false;
+            if !self.samples.is_empty() {
+                self.idx = self.idx + speed;
+                if self.idx.ceil() >= self.samples.len() as f32 {
+                    self.idx -= self.samples.len() as f32;
+                } else if self.idx.floor() < 0.0 {
+                    self.idx += self.samples.len() as f32;
+                }
+                let f = f32x8::splat(self.idx.fract());
+                let a = self.samples[self.idx.floor() as usize];
+                let b = self.samples[self.idx.ceil() as usize % self.samples.len()];
+                Value(((a.0*(1.0-f) + b.0*f), (a.1*(1.0-f) + b.1*f)))
+            } else {
+                Value((f32x8::splat(0.0),f32x8::splat(0.0)))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Toggle {
+    value: bool,
+    triggered: bool,
+}
+impl Node for Toggle {
+    type Input = Value<(f32,)>;
+    type Output = Value<(f32,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((gate,)) = input;
+        if gate > 0.5 {
+            if !self.triggered {
+                self.triggered = true;
+                self.value = !self.value;
+            }
+        } else {
+            self.triggered = false;
+        }
+        Value((if self.value { 1.0 } else { 0.0 },))
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct ProbImpulse(bool);
+impl Node for ProbImpulse {
+    type Input = Value<(f32x8, f32x8,)>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((prob, gate)) = input;
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let gate = gate.extract(i);
+            let mut switched = false;
+            if !self.0 && gate > 0.5 {
+                if random::<f32>() < prob.extract(i).abs() {
+                    self.0= true;
+                    switched = true;
+                }
+            } else if gate < 0.5 {
+                self.0 = false;
+            }
+            if switched {
+                r = unsafe { r.replace_unchecked(i, 1.0) };
+            }
+        }
+        Value((r,))
+    }
+}
+#[derive(Copy, Clone, Default)]
+pub struct AccumulatorImpulse(bool,f32,f32);
+impl Node for AccumulatorImpulse {
+    type Input = Value<(f32x8, f32x8,)>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((sig, gate)) = input;
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let gate = gate.extract(i);
+            let sig = sig.extract(i);
+            self.1 += sig.abs() * self.2;
+            let mut switched = false;
+            if !self.0 && gate > 0.5 {
+                if random::<f32>() < self.1 {
+                    self.1=0.0;
+                    self.0= true;
+                    switched = true;
+                }
+            } else if gate < 0.5 {
+                self.0 = false;
+            }
+            if switched {
+                r = unsafe { r.replace_unchecked(i, 1.0) };
+            }
+        }
+        Value((r,))
+    }
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.2= 1.0 / rate;
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct ToPower;
+impl Node for ToPower {
+    type Input = Value<(f32x8, f32x8,)>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((sig, pow)) = input;
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let pow = pow.extract(i);
+            let sig = sig.extract(i);
+            r = r.replace(i, sig.abs().powf(pow)*sig.signum());
+        }
+        Value((r,))
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct Register(f32,f32);
+impl Node for Register {
+    type Input = Value<(f32,)>;
+    type Output = Value<(f32,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        self.0 = (input.0).0;
+        Value((self.1,))
+    }
+
+    #[inline]
+    fn post_process(&mut self) {
+        println!("{}", self.0);
+        self.1 = self.0;
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct Comparator;
+impl Node for Comparator {
+    type Input = Value<(f32,f32)>;
+    type Output = Value<(f32,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((a,b))=input;
+        if a > b {
+            Value((1.0,))
+        } else {
+            Value((0.0,))
+        }
+    }
+}
+
+//https://www.musicdsp.org/en/latest/Filters/92-state-variable-filter-double-sampled-stable.html
+#[derive(Copy, Clone, Default)]
+pub struct SimperSvf {
+    notch: f32,
+    low: f32,
+    high: f32,
+    band: f32,
+    sample_rate: f32,
+    ty: u32,
+}
+impl SimperSvf {
+    pub fn low_pass() -> Self {
+        Self::default()
+    }
+    pub fn high_pass() -> Self {
+        let mut r = Self::default();
+        r.ty = 1;
+        r
+    }
+    pub fn band_pass() -> Self {
+        let mut r = Self::default();
+        r.ty = 2;
+        r
+    }
+    pub fn notch() -> Self {
+        let mut r = Self::default();
+        r.ty = 3;
+        r
+    }
+}
+impl Node for SimperSvf {
+    type Input = Value<((f32x8,f32x8), (f32x8, f32x8))>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value(((fc,res),(drive,sig)))=input;
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let fc = fc.extract(i);
+            let res = res.extract(i);
+            let drive = drive.extract(i);
+            let sig = sig.extract(i);
+
+            let freq = 2.0*(PI*0.25f32.min(fc/(self.sample_rate*2.0))).sin();
+            let damp = (2.0f32*(1.0 - res.powf(0.25))).min(2.0f32.min(2.0/freq - freq*0.5));
+
+            self.notch = sig - damp*self.band;
+            self.low   = self.low + freq*self.band;
+            self.high  = self.notch - self.low;
+            self.band  = freq*self.high + self.band - drive*self.band.powi(3);
+            let mut out = 0.5*match self.ty {
+                0 => self.low,
+                1 => self.high,
+                2 => self.band,
+                3 => self.notch,
+                _ => panic!(),
+            };
+            self.notch = sig - damp*self.band;
+            self.low   = self.low + freq*self.band;
+            self.high  = self.notch - self.low;
+            self.band  = freq*self.high + self.band - drive*self.band.powi(3);
+            out += 0.5*match self.ty {
+                0 => self.low,
+                1 => self.high,
+                2 => self.band,
+                3 => self.notch,
+                _ => panic!(),
+            };
+            out  += 0.5*self.low;
+            r = r.replace(i,out);
+        }
+        Value((r,))
+    }
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.sample_rate=rate;
     }
 }

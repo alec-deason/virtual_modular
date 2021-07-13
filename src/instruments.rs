@@ -982,244 +982,41 @@ routing! {
     gate: (f32x8,),
 }
 
-#[derive(Clone)]
-pub struct BigDrum {
-    gain: Box<dyn Node<Input = Value<(f32x8,)>, Output = Value<(f32x8,)>>>,
-    noise: Box<dyn Node<Input = Value<(f32x8,)>, Output = Value<(f32x8,)>>>,
-    pub routing: DrumRouting,
-}
-impl Default for BigDrum {
-    fn default() -> Self {
-        let routing = DrumRouting::default();
-
-        let f = move |t: f32, _off_time: Option<f32>| {
-            let s = tweak!(5.0);
-            let attack = tweak!(0.002) * s;
-            let release = tweak!(0.025) * s;
-            if t < attack {
-                (t / attack).min(1.0)
-            } else if t < attack + release {
-                let t = t - attack;
-                1.0 - (t / release).min(1.0)
-            } else {
-                0.0
-            }
-        };
-        let gain = Pipe(
-            ThreshEnvelope::new(f),
-            curry(FnConstant(|| f32x8::splat(tweak!(2.0))), Mul::default()),
-        );
-
-        let f = move |t: f32, _off_time: Option<f32>| {
-            let s = tweak!(2.0);
-            let attack = tweak!(0.001) * s;
-            let release = tweak!(0.003) * s;
-            if t < attack {
-                (t / attack).min(1.0)
-            } else if t < attack + release {
-                let t = t - attack;
-                1.0 - (t / release).min(1.0)
-            } else {
-                0.0
-            }
-        };
-        let cutoff = Pipe(
-            ThreshEnvelope::new(f),
-            FnRescale(|| (tweak!(20.0), tweak!(800.0))),
-        );
-        let filter = curry(
-            Branch::new(
-                cutoff,
-                Pipe(Sink::default(), FnConstant(|| f32x8::splat(tweak!(3.0)))),
-            ),
-            Biquad::lowpass(),
-        );
-
-        //let r: &dyn Node<Input=Value<(f32x8, )>, Output=Value<(f32x8, f32x8)>> = &noise;
-        let (b_in, b) = Bridge::new((f32x8::splat(0.0),));
-        let mut noise = RetriggeringWaveTable::new(WaveTable::noise());
-        noise.routing.gate(Pipe(b, Strip::default()));
-        noise
-            .routing
-            .pitch(FnConstant(|| f32x8::splat(tweak!(880.0))));
-        let noise = Pipe(
-            b_in,
-            Pipe(
-                Pipe(
-                    Concat::<
-                        _,
-                        Value<(f32x8,)>,
-                        (NoValue, Value<(f32x8,)>),
-                        (Value<(f32x8,)>, Value<(f32x8,)>),
-                    >::new(noise),
-                    Flip::default(),
-                ),
-                filter,
-            ),
-        );
-
-        let low_filter = curry(
-            Branch::new(
-                FnConstant(|| f32x8::splat(tweak!(66.0))),
-                FnConstant(|| f32x8::splat(tweak!(10.0))),
-            ),
-            Biquad::peaking_eq(Rc::new(RefCell::new((0.1,)))),
-        );
-        let noise = Pipe(noise, low_filter);
-
-        //let noise = Pipe(noise, curry(FnConstant(|| f32x8::splat(tweak!(0.1))), Mul::default()));
-
-        Self {
-            routing,
-            gain: Box::new(gain),
-            noise: Box::new(noise),
-        }
-    }
-}
-
-impl Node for BigDrum {
-    type Input = NoValue;
-    type Output = Value<(f32x8, f32x8)>;
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let gate = self.routing.gate.0.process(NoValue);
-        let gain = *self.gain.process(gate).car();
-        let noise = *self.noise.process(gate).car() * gain;
-        Value((noise, noise))
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.routing.set_sample_rate(rate);
-        self.gain.set_sample_rate(rate);
-        self.noise.set_sample_rate(rate);
-    }
-}
 
 #[derive(Clone)]
 pub struct RetriggeringWaveTable {
     wave_table: WaveTable,
     triggered: bool,
-    pub routing: BassRouting,
 }
 impl RetriggeringWaveTable {
-    fn new(table: WaveTable) -> Self {
-        let routing = BassRouting::default();
+    pub fn new(table: WaveTable) -> Self {
         Self {
             wave_table: table,
             triggered: false,
-            routing,
         }
     }
 }
 
 impl Node for RetriggeringWaveTable {
-    type Input = NoValue;
+    type Input = Value<(f32x8, f32)>;
     type Output = Value<(f32x8,)>;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-        let gate = self.routing.gate.0.process(NoValue);
-        let gate_max = gate.car().max_element();
-        let pitch = self.routing.pitch.0.process(NoValue);
-        if gate_max > 0.5 && !self.triggered {
+        let Value((pitch, gate)) = input;
+        if gate > 0.5 && !self.triggered {
             self.triggered = true;
             self.wave_table.idx = 0.0;
-        } else if gate_max < 0.5 {
+        } else if gate < 0.5 {
             self.triggered = false;
         }
-        self.wave_table.process(pitch)
+        self.wave_table.process(Value((pitch,)))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
-        self.routing.set_sample_rate(rate);
         self.wave_table.set_sample_rate(rate);
     }
 }
 
-routing! {
-    PlinkRouting,
-    gate: (f32x8,),
-    pitch1: (f32x8,),
-    pitch2: (f32x8,),
-    pitch3: (f32x8,),
-    pitch4: (f32x8,),
-
-    q1: (f32x8,),
-    q2: (f32x8,),
-    q3: (f32x8,),
-    q4: (f32x8,),
-
-    eq_1_gain: (f32,),
-    eq_2_gain: (f32,),
-}
-#[derive(Clone)]
-pub struct ExcitablePlink {
-    pub routing: PlinkRouting,
-    output: Box<dyn Node<Input=NoValue, Output=Value<(f32x8,)>>>
-}
-
-impl Default for ExcitablePlink {
-    fn default() -> Self {
-        let mut routing = PlinkRouting::default();
-
-        routing.pitch1(Constant(f32x8::splat(100.0)));
-        routing.pitch2(Constant(f32x8::splat(1000.0)));
-        routing.pitch3(Constant(f32x8::splat(80.0)));
-        routing.pitch4(Constant(f32x8::splat(60.0)));
-
-        routing.pitch1.0.process(NoValue);
-        routing.pitch2.0.process(NoValue);
-        routing.pitch3.0.process(NoValue);
-        routing.pitch4.0.process(NoValue);
-
-        routing.q1(Constant(f32x8::splat(1.0)));
-        routing.q2(Constant(f32x8::splat(10.0)));
-        routing.q3(Constant(f32x8::splat(20.0)));
-        routing.q4(Constant(f32x8::splat(10.0)));
-
-        routing.q1.0.process(NoValue);
-        routing.q2.0.process(NoValue);
-        routing.q3.0.process(NoValue);
-        routing.q4.0.process(NoValue);
-
-        routing.eq_1_gain(Constant(5.0));
-        routing.eq_2_gain(Constant(5.0));
-
-        let (b_in, b) = Bridge::<Value<(f32x8,)>>::new((f32x8::splat(0.0),));
-        let feedback_gain = FnConstant(|| f32x8::splat(0.0005));
-        let filter_a = curry(Branch::new(routing.pitch1_bridge(), routing.q1_bridge()), Biquad::bandpass());
-        let filter_b = curry(Branch::new(routing.pitch2_bridge(), routing.q2_bridge()), Biquad::bandpass());
-        let filter = Pipe(Branch::new(filter_a, filter_b), Add::default());
-        let plink = Pipe(Pipe(routing.gate_bridge(), curry(Pipe(Pipe(b, Strip::default()), curry(feedback_gain, Mul::default())), Add::default())), filter);
-        let filter = curry(Branch::new(routing.pitch3_bridge(), routing.q3_bridge()), Biquad::peaking_eq(Rc::clone(&routing.eq_1_gain.1.0)));
-        let plink = Pipe(plink, filter);
-        let filter = curry(Branch::new(routing.pitch4_bridge(), routing.q4_bridge()), Biquad::peaking_eq(Rc::clone(&routing.eq_2_gain.1.0)));
-        let plink = Pipe(plink, filter);
-        let plink = Pipe(plink, BFunc(|v:f32x8| v.tanh()));
-
-        let ping = Pipe(Pipe(plink, b_in), curry(FnConstant(|| f32x8::splat(0.7)), Mul::<f32x8, f32x8>::default()));
-        let ping = Pipe(ping, BFunc(|v:f32x8| v.tanh()));
-
-        Self {
-            routing,
-            output: Box::new(ping),
-        }
-    }
-}
-
-impl Node for ExcitablePlink {
-    type Input = NoValue;
-    type Output = Value<(f32x8,)>;
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        self.routing.process();
-        self.output.process(NoValue)
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.routing.set_sample_rate(rate);
-        self.output.set_sample_rate(rate);
-    }
-}
 
 routing! {
     SoftMachineRouting,
@@ -1327,11 +1124,7 @@ impl Node for InlineSoftTuringMachine {
         Value((r,))
     }
 }
-#[distributed_slice(MODULES)]
-fn dynamic_turing_machine() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(InlineSoftTuringMachine::default());
-    ("turing_machine".to_string(), n)
-}
+
 
 #[derive(Clone)]
 pub struct ShiftRegister {
@@ -1384,17 +1177,17 @@ pub struct SmoothLeader {
 }
 
 impl SmoothLeader {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             voices: [0, 2, 4, 6],
             scale: vec![
-                220.0 * 1.0,
-                220.0 * 1.0594630943592953f32.powi(2),
-                220.0 * 1.0594630943592953f32.powi(4),
-                220.0 * 1.0594630943592953f32.powi(5),
-                220.0 * 1.0594630943592953f32.powi(7),
-                220.0 * 1.0594630943592953f32.powi(9),
-                220.0 * 1.0594630943592953f32.powi(10),
+                1.0,
+                1.0594630943592953f32.powi(2),
+                1.0594630943592953f32.powi(4),
+                1.0594630943592953f32.powi(5),
+                1.0594630943592953f32.powi(7),
+                1.0594630943592953f32.powi(9),
+                1.0594630943592953f32.powi(10),
             ],
             triggered: false
         }
@@ -1418,11 +1211,11 @@ impl SmoothLeader {
 }
 
 impl Node for SmoothLeader {
-    type Input = Value<(f32,)>;
+    type Input = Value<(f32,f32)>;
     type Output = Value<((f32, f32), (f32, f32))>;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((gate,)) = input;
+        let Value((root,gate)) = input;
         if gate > 0.5 {
             if !self.triggered {
                 self.triggered = true;
@@ -1432,11 +1225,6 @@ impl Node for SmoothLeader {
             self.triggered = false;
         }
         let pitches = self.pitches();
-        Value(((pitches[0], pitches[1]), (pitches[2], pitches[3])))
+        Value(((root*pitches[0], root*pitches[1]), (root*pitches[2], root*pitches[3])))
     }
-}
-#[distributed_slice(MODULES)]
-fn dynamic_smooth_leader() -> (String, BoxedDynamicNode) {
-    let n = BoxedDynamicNode::new(SmoothLeader::new());
-    ("smooth_leader".to_string(), n)
 }

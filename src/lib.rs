@@ -1,7 +1,7 @@
+#[macro_use] pub mod dynamic_graph;
 pub mod instruments;
 pub mod simd_graph;
 pub mod type_list;
-pub mod dynamic_graph;
 use packed_simd_2::f32x8;
 use type_list::{NoValue, Value};
 

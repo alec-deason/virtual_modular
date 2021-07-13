@@ -16,6 +16,7 @@ use crate::{
 
 pub trait DynamicNode: DynClone {
     fn process(&mut self);
+    fn post_process(&mut self);
     fn input_len(&self) -> usize;
     fn output_len(&self) -> usize;
     fn get(&self, i:usize) -> f32x8;
@@ -28,6 +29,10 @@ dyn_clone::clone_trait_object!(DynamicNode);
 impl<A: DynamicValue, B:DynamicValue, N: Node<Input=A, Output=B> + Clone> DynamicNode for (N, RefCell<A>, RefCell<B>) {
     fn process(&mut self) {
         *self.2.borrow_mut() = self.0.process(self.1.borrow().clone());
+    }
+
+    fn post_process(&mut self) {
+        self.0.post_process();
     }
 
     fn input_len(&self) -> usize {
@@ -86,63 +91,35 @@ pub enum Expression {
     Operation(Box<Expression>, Operator, Box<Expression>),
 }
 impl Expression {
-    fn evaluate(&self, get_node: &mut impl FnMut(String, usize) -> f32x8) -> f32x8 {
+    fn as_lines(&self, target_node: String, target_port: usize) -> Vec<Line> {
+        let mut lines = vec![];
         match self {
             Expression::Term(t) => {
                 match t {
-                    Term::Node(n, c) => get_node(n.clone(), *c),
-                    Term::Number(n) => f32x8::splat(*n)
+                    Term::Node(n, c) => {
+                        lines.push(Line::Edge(n.clone(), *c as u32, target_node, target_port as u32));
+                    }
+                    Term::Number(v) => {
+                        let n = uuid::Uuid::new_v4().to_string();
+                        lines.push(Line::Node(n.clone(), "c".to_string(), Some(BoxedDynamicNode::new(Constant(f32x8::splat(*v))))));
+                        lines.push(Line::Edge(n, 0, target_node, target_port as u32));
+                    }
                 }
             }
             Expression::Operation(a, o, b) => {
-                let a = a.evaluate(get_node);
-                let b = b.evaluate(get_node);
+                let n = uuid::Uuid::new_v4().to_string();
+                lines.extend(a.as_lines(n.clone(), 0));
+                lines.extend(b.as_lines(n.clone(), 1));
                 match o {
-                    Operator::Add => a + b,
-                    Operator::Sub => a - b,
-                    Operator::Mul => a * b,
-                    Operator::Div => a / b,
+                    Operator::Add => lines.push(Line::Node(n.clone(), "add".to_string(), None)),
+                    Operator::Sub => lines.push(Line::Node(n.clone(), "sub".to_string(), None)),
+                    Operator::Mul => lines.push(Line::Node(n.clone(), "mul".to_string(), None)),
+                    Operator::Div => lines.push(Line::Node(n.clone(), "div".to_string(), None)),
                 }
+                lines.push(Line::Edge(n, 0, target_node, target_port as u32));
             }
         }
-    }
-
-    fn nodes(&self) -> Vec<(String, usize)> {
-        match self {
-            Expression::Term(Term::Node(n, i)) => vec![(n.clone(), *i)],
-            Expression::Operation(a, _, b) => [a.nodes(), b.nodes()].concat(),
-            _ => vec![]
-        }
-    }
-}
-
-#[derive(Copy, Clone)]
-pub struct FakeConstant;
-impl<A: DynamicValue> DynamicNode for (FakeConstant, RefCell<A>) {
-    fn process(&mut self) {
-    }
-
-    fn input_len(&self) -> usize {
-        1
-    }
-
-    fn output_len(&self) -> usize {
-        1
-    }
-
-    fn get(&self, i:usize) -> f32x8 {
-        self.1.borrow().get(i)
-    }
-
-    fn set(&mut self, i:usize, v: f32x8) {
-        self.1.borrow_mut().set(i, v)
-    }
-
-    fn add(&mut self, i:usize, v: f32x8) {
-        self.1.borrow_mut().add(i, v)
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
+        lines
     }
 }
 
@@ -152,6 +129,10 @@ impl DynamicNode for (DynamicGraph, RefCell<[f32x8; 2]>) {
         let mut o = self.1.borrow_mut();
         o[0] = (r.0).0;
         o[1] = (r.0).1;
+    }
+
+    fn post_process(&mut self) {
+        self.0.post_process();
     }
 
     fn input_len(&self) -> usize {
@@ -181,6 +162,13 @@ impl DynamicNode for (DynamicGraph, RefCell<[f32x8; 2]>) {
 
 #[derive(Clone)]
 pub struct BoxedDynamicNode(Box<dyn DynamicNode>);
+
+impl std::fmt::Debug for BoxedDynamicNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoxedDynamicNode")
+        .finish()
+    }
+}
 impl BoxedDynamicNode {
         pub fn new<A: DynamicValue + Default + 'static, B:DynamicValue + Default + 'static, N: Node<Input=A, Output=B> + Clone + 'static>(n: N) -> Self {
         let a = A::default();
@@ -191,6 +179,10 @@ impl BoxedDynamicNode {
 impl DynamicNode for BoxedDynamicNode {
     fn process(&mut self) {
         self.0.process();
+    }
+
+    fn post_process(&mut self) {
+        self.0.post_process();
     }
 
     fn input_len(&self) -> usize {
@@ -219,16 +211,18 @@ impl DynamicNode for BoxedDynamicNode {
 }
 
 #[distributed_slice]
-pub static MODULES: [fn() -> (String, BoxedDynamicNode)] = [..];
+pub static MODULES: [(&'static str, fn() -> BoxedDynamicNode)] = [..];
 
 #[derive(Clone, Default)]
 pub struct DynamicGraph {
     nodes: HashMap<String, (BoxedDynamicNode, String)>,
     dynamic_nodes: HashMap<String, Box<DynamicGraph>>,
+    pub external_inputs: Arc<Mutex<HashMap<String, f32>>>,
+    external_input_nodes: HashMap<String, (String, f32)>,
     pub watch_list: Arc<Mutex<HashSet<String>>>,
     input: Vec<f32x8>,
     output: (f32x8, f32x8),
-    edges: HashMap<String, Vec<(usize, Expression)>>,
+    edges: HashMap<String, Vec<(usize, String, usize)>>,
     reset_edges: Vec<(String,usize)>,
     topo_sort: Vec<String>,
     pub reload_data: Arc<Mutex<Option<String>>>,
@@ -237,6 +231,11 @@ pub struct DynamicGraph {
 
 impl DynamicGraph {
     pub fn process(&mut self) -> Value<(f32x8, f32x8)> {
+        if let Ok(ei) = self.external_inputs.lock() {
+            for (k, v) in self.external_input_nodes.values_mut() {
+                *v = *ei.get(k).unwrap_or(&0.0);
+            }
+        }
         self.output = (f32x8::splat(0.0), f32x8::splat(0.0));
         for (n,v) in &self.reset_edges {
             if let Some(node) = self.nodes.get_mut(n) {
@@ -245,56 +244,36 @@ impl DynamicGraph {
                 self.dynamic_nodes.get_mut(n).expect(&format!("no definition for {}",n)).input[*v] = f32x8::splat(0.0);
             }
         }
-        let DynamicGraph {
-            edges,
-            nodes,
-            input,
-            dynamic_nodes,
-            ..
-        } = self;
 
-        let DynamicGraph {
-            topo_sort,
-            nodes,
-            output,
-            dynamic_nodes,
-            edges,
-            ..
-        } = self;
-        for node in topo_sort {
-            if let Some(others) = edges.get(node) {
-                for (i, e) in others {
-                    let mut f = |k, c| {
-                        if let Some(n) = nodes.get_mut(&k) {
-                            n.0.get(c)
-                        } else {
-                            let g = dynamic_nodes.get_mut(&k).expect(&format!("no definition for {}",&k));
-                            g.input[c]
-                        }
-                    };
-                    let v = e.evaluate(&mut f);
+        for node in &self.topo_sort {
+            if let Some(others) = self.edges.get(node) {
+                for (dst_i, n, src_i) in others {
+                    let v = self.get(n, *src_i).unwrap();
                     if node == "output" {
-                        if *i == 0 {
-                            output.0 += v;
+                        if *dst_i == 0 {
+                            self.output.0 += v;
                         } else {
-                            output.1 += v;
+                            self.output.1 += v;
                         }
                     } else {
-                        if let Some(n) = nodes.get_mut(node) {
-                            n.0.add(*i, v);
+                        if let Some(n) = self.nodes.get_mut(node) {
+                            n.0.add(*dst_i, v);
                         } else {
-                            dynamic_nodes.get_mut(node).expect(&format!("no definition for {}",node)).input[*i] += v;
+                            self.dynamic_nodes.get_mut(node).expect(&format!("no definition for {}",node)).input[*dst_i] += v;
                         }
                     }
                 }
             }
             if node != "output" {
-                if let Some(n) = nodes.get_mut(node) {
+                if let Some(n) = self.nodes.get_mut(node) {
                     n.0.process();
-                } else {
-                    dynamic_nodes.get_mut(node).unwrap().process();
+                } else if !self.external_input_nodes.contains_key(node) {
+                    self.dynamic_nodes.get_mut(node).unwrap().process();
                 }
             }
+        }
+        for (node,_) in self.nodes.values_mut() {
+            node.post_process();
         }
         Value((self.output.0, self.output.1))
     }
@@ -306,34 +285,37 @@ impl DynamicGraph {
         self.nodes.insert(name, (n, ty));
     }
 
-    pub fn add_edge(&mut self, i: usize, a: String, e: Expression) {
-        let es = self.edges.entry(a).or_insert_with(|| vec![]);
-        es.push((i, e));
+    pub fn add_edge(&mut self, src_i: usize, src: String, dst_i: usize, dst: String) {
+        let es = self.edges.entry(dst).or_insert_with(|| vec![]);
+        es.push((dst_i, src, src_i));
     }
 
     pub fn update_sort(&mut self) -> Result<(), String> {
         let mut edges = HashMap::new();
         for (dst, srcs) in &self.edges {
-            for (_, e) in srcs {
-                for (n,_) in e.nodes() {
-                    edges.entry(n).or_insert_with(|| vec![]).push(dst);
+            for (_, src, _) in srcs {
+                if src == "input" {
+                    continue
                 }
+                edges.entry(src).or_insert_with(|| HashSet::new()).insert(dst);
             }
         }
         let mut nodes:HashSet<String> = self.nodes.keys().cloned().collect();
         nodes.extend(self.dynamic_nodes.keys().cloned());
+        nodes.extend(self.external_input_nodes.keys().cloned());
+        let delay_nodes:HashSet<_> = self.nodes.iter().filter_map(|(k,(_,ty))| if ty == "delay" || ty == "reg" { Some(k) } else { None } ).collect();
 
         self.topo_sort.clear();
         while !nodes.is_empty() {
             let mut to_remove = None;
             for node in &nodes {
-                if !edges.iter().any(|(k, a)| k!="input" && a.iter().any(|k| k==&node)) {
+                if !edges.iter().any(|(src, dsts)| !delay_nodes.contains(src) && dsts.contains(node)) {
                     self.topo_sort.push(node.clone());
                     to_remove = Some(node.clone());
                     break;
                 }
             }
-            let node = to_remove.ok_or("Graph must not contain cycles".to_string())?;
+            let node = to_remove.ok_or_else(|| format!("Graph must not contain cycles. Remaining_nodes: {:?}", nodes))?;
             edges.remove(&node);
             nodes.remove(&node);
         }
@@ -342,7 +324,7 @@ impl DynamicGraph {
     }
 
     fn reparse(&mut self, l: &[Line]) -> Result<(), String> {
-        let modules: HashMap<_,_> = MODULES.iter().map(|f| f()).collect();
+        let module_constructors: HashMap<_,_> = MODULES.iter().enumerate().map(|(i, (n, _f))| (n.to_string(), i)).collect();
         self.edges.clear();
         let mut nodes = HashMap::new();
         let mut definitions = HashMap::new();
@@ -362,6 +344,7 @@ impl DynamicGraph {
             }
         }
         self.nodes.retain(|k,v| nodes.get(k).map(|ty| &&v.1==ty).unwrap_or(false));
+        self.external_input_nodes.clear();
         self.dynamic_nodes.retain(|k,v| nodes.contains_key(k));
         self.reset_edges.clear();
         for l in l {
@@ -376,8 +359,8 @@ impl DynamicGraph {
                         if let Some(g) = self.dynamic_nodes.get_mut(&k) {
                             g.reparse(definitions.get(ty).unwrap())?;
                         } if !self.nodes.contains_key(&k) {
-                            if let Some(n) = modules.get(ty) {
-                                let mut n = n.clone();
+                            if let Some(i) = module_constructors.get(ty) {
+                                let mut n = MODULES[*i].1();
                                 n.set_sample_rate(self.sample_rate);
                                 self.add_boxed_node(k.clone(), ty.clone(), n);
                             } else if let Some(n) = definitions.get(ty) {
@@ -392,24 +375,43 @@ impl DynamicGraph {
                         }
                     }
                 }
-                Line::Edge(dst, i, e) => {
+                Line::ExternalParam(n, k) => {
+                    self.external_input_nodes.insert(n.clone(),(k.clone(), 0.0));
+                }
+                Line::Edge(src, src_i, dst, dst_i) => {
                     if dst != "output" {
-                        self.reset_edges.push((dst.clone(), *i as usize));
+                        self.reset_edges.push((dst.clone(), *dst_i as usize));
                     }
-                    for (n,i) in e.nodes() {
-                        if n=="input" {
-                            input_len = input_len.max(i + 1);
-                        }
+                    if src=="input" {
+                        input_len = input_len.max(src_i + 1);
                     }
-                    self.add_edge(*i as usize, dst.clone(), e.clone())
+                    self.add_edge(*src_i as usize, src.clone(), *dst_i as usize, dst.clone())
                 }
                 _ => ()
             }
         }
-        self.input.resize(input_len, f32x8::splat(0.0));
+        self.input.resize(input_len as usize, f32x8::splat(0.0));
         *self.watch_list.lock().unwrap() = watch_list;
         let r = self.update_sort();
         r
+    }
+
+    fn get(&self, n: &str, i: usize) -> Option<f32x8> {
+        if n == "input" {
+            self.input.get(i).cloned()
+        } else if let Some((_, v)) = self.external_input_nodes.get(n) {
+            Some(f32x8::splat(*v))
+        } else if let Some(n) = self.nodes.get(n) {
+            Some(n.0.get(i))
+        } else if let Some(n) = self.dynamic_nodes.get(n) {
+            match i {
+                0 => Some(n.output.0),
+                1 => Some(n.output.1),
+                _ => panic!(),
+            }
+        } else {
+            panic!("Undefined node {}", n);
+        }
     }
 
     pub fn parse(data: &str) -> Result<Self, String> {
@@ -476,13 +478,70 @@ impl DynamicGraph {
             })
         }
 
+        fn sumseq<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let name = (none_of(b"\n=[](),")).repeat(1..).convert(String::from_utf8) - seq(b"=sumseq");
+            let r = name + sym(b'[') * list(sym(b'(') * number() - sym(b',') + number() - sym(b')'), sym(b',')) - sym(b']');
+            let parameter = (sym(b'(') * list(expression(), sym(b',')) - sym(b')')).opt();
+            let r = r + parameter;
+            r.map(|((k, ns), p)| {
+                let ns:Vec<_> = ns.into_iter().map(|(c,p)| (c as u32, p)).collect();
+                let ns:[(u32, f32); 4] = ns.try_into().unwrap();
+                let n = SumSequencer::new(ns);
+                let n = BoxedDynamicNode::new(n);
+                let mut edges:Vec<_> = if let Some(p) = p {
+                    p.iter().enumerate().map(|(i,e)| {
+                        e.as_lines(k.clone(), i)
+                    }).flatten().collect()
+                } else {
+                    vec![]
+                };
+                edges.push(Line::Node(k, "sum_sequencer".to_string(), Some(n)));
+                edges
+            })
+        }
+        fn sequencer<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let name = (none_of(b"\n=[](),")).repeat(1..).convert(String::from_utf8) - seq(b"=seq");
+            let r = name + sym(b'[') * list(number(), sym(b',')) - sym(b']');
+            let parameter = (sym(b'(') * list(expression(), sym(b',')) - sym(b')')).opt();
+            let r = r + parameter;
+            r.map(|((k, ns), p)| {
+                let n = Sequencer::new(ns);
+                let n = BoxedDynamicNode::new(n);
+                let mut edges:Vec<_> = if let Some(p) = p {
+                    p.iter().enumerate().map(|(i,e)| {
+                        e.as_lines(k.clone(), i)
+                    }).flatten().collect()
+                } else {
+                    vec![]
+                };
+                edges.push(Line::Node(k, "sequencer".to_string(), Some(n)));
+                edges
+            })
+        }
+        fn external_parameter<'a>() -> Parser<'a, u8, Vec<Line>> {
+            (none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b'=') - seq(b"e{") + none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}')).map(|(n,k)| {
+                vec![Line::ExternalParam(n, k)]
+            })
+        }
+
         fn comment<'a>() -> Parser<'a, u8, Vec<Line>> {
             let comment = (sym(b'#') * none_of(b"\n").repeat(0..)) - sym(b'\n');
             let empty_line = (sym(b'\n')).repeat(1);
             (comment | empty_line).map(|_| vec![Line::Comment])
         }
+        fn bridge<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let n_in = seq(b"b{") * none_of(b",").repeat(1..).convert(String::from_utf8) - sym(b',');
+            let n_out = none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}');
+            (n_in+n_out).map(|(n_in,n_out)| {
+                let (a,b) = Bridge::<Value<(f32,)>>::new((0.0f32,));
+                vec![
+                    Line::Node(n_in, "bridge_in".to_string(), Some(BoxedDynamicNode::new(a))),
+                    Line::Node(n_out, "bridge_out".to_string(), Some(BoxedDynamicNode::new(Pipe(b, Strip::<Value<((f32,),)>, Value<(f32,)>>::default())))),
+                ]
+            })
+        }
         fn synth<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let p = (comment() | node_definition() | automate() | include() | edge() | node()).repeat(1..);
+            let p = (comment() | bridge() | external_parameter() | sequencer() | sumseq() | node_definition() | automate() | include() | edge() | node()).repeat(1..);
             p.map(|ls| ls.into_iter().flatten().collect())
         }
         fn node_definition<'a>() -> Parser<'a, u8, Vec<Line>> {
@@ -503,8 +562,8 @@ impl DynamicGraph {
             ((none_of(b"\n=(),")).repeat(1..).convert(String::from_utf8) - sym(b'=') + (none_of(b"[](),\n")).repeat(1..).convert(String::from_utf8) + parameter - sym(b'\n')).map(|((k, n), p)| {
                 let mut edges:Vec<_> = if let Some(p) = p {
                     p.iter().enumerate().map(|(i,e)| {
-                        Line::Edge(k.clone(), i as u32, e.clone())
-                    }).collect()
+                        e.as_lines(k.clone(), i)
+                    }).flatten().collect()
                 } else {
                     vec![]
                 };
@@ -526,16 +585,18 @@ impl DynamicGraph {
                 expression()
                 - sym(b')') - sym(b'\n');
             p.map(|((dst, i), e)| {
-                vec![Line::Edge(dst, i, e)]
+                e.as_lines(dst, i as usize)
             })
         }
         synth().parse(data.as_bytes()).map_err(|e| format!("{:?}", e))
     }
 }
+#[derive(Debug)]
 enum Line {
+    ExternalParam(String, String),
     Node(String, String, Option<BoxedDynamicNode>),
     NodeDefinition(String, Vec<Line>),
-    Edge(String, u32, Expression),
+    Edge(String, u32, String, u32),
     Include(String),
     Comment,
 }
@@ -563,6 +624,7 @@ impl Node for DynamicGraph {
                 }
                 Err(e) => println!("{:?}", e)
             }
+            println!("reloaded...");
         }
         self.process()
     }
@@ -580,19 +642,58 @@ impl Node for DynamicGraph {
 
 
 use crate::simd_graph::*;
-#[distributed_slice(MODULES)]
-fn dynamic_sine() -> (String, BoxedDynamicNode) {
-    ("sine".to_string(), BoxedDynamicNode::new(WaveTable::sine()))
+
+macro_rules! dynamic_node {
+    ($name:expr, $static_name:ident, $constructor:expr) => {
+            concat_idents::concat_idents!(fn_name = "__MODULE_fn_", $name {
+                fn fn_name() -> BoxedDynamicNode {
+                    BoxedDynamicNode::new($constructor)
+                }
+
+                #[distributed_slice(MODULES)]
+                static $static_name: (&'static str, fn() -> BoxedDynamicNode) = ($name, fn_name);
+        });
+    }
 }
-#[distributed_slice(MODULES)]
-fn dynamic_psine() -> (String, BoxedDynamicNode) {
-    ("psine".to_string(), BoxedDynamicNode::new(WaveTable::positive_sine()))
-}
-#[distributed_slice(MODULES)]
-fn dynamic_saw() -> (String, BoxedDynamicNode) {
-    ("saw".to_string(), BoxedDynamicNode::new(WaveTable::saw()))
-}
-#[distributed_slice(MODULES)]
-fn dynamic_square() -> (String, BoxedDynamicNode) {
-    ("square".to_string(), BoxedDynamicNode::new(WaveTable::square()))
-}
+dynamic_node!("sine", __MODULE_sine, WaveTable::sine());
+dynamic_node!("psine", __MODULE_psine, WaveTable::positive_sine());
+dynamic_node!("saw", __MODULE_saw, WaveTable::saw());
+dynamic_node!("square", __MODULE_square, WaveTable::square());
+dynamic_node!("noise", __MODULE_noise, Pipe(Constant(f32x8::splat(440.0)), WaveTable::noise()));
+dynamic_node!("rnoise", __MODULE_rnoise, curry(Constant(f32x8::splat(440.0)), crate::instruments::RetriggeringWaveTable::new(WaveTable::noise())));
+dynamic_node!("ad", __MODULE_ad, InlineADEnvelope::default());
+dynamic_node!("asd", __MODULE_asd, InlineASDEnvelope::default());
+dynamic_node!("lpf", __MODULE_lpf, Biquad::lowpass());
+dynamic_node!("hpf", __MODULE_hpf, Biquad::highpass());
+dynamic_node!("bpf", __MODULE_bpf, Biquad::bandpass());
+dynamic_node!("eq", __MODULE_eq, Biquad::peaking_eq());
+dynamic_node!("sh", __MODULE_sh, SampleAndHold::default());
+dynamic_node!("ap", __MODULE_ap, AllPass::default());
+dynamic_node!("comb", __MODULE_comb, Comb::new(DelayLine::new(2)));
+dynamic_node!("pd", __MODULE_pd, PulseDivider::default());
+dynamic_node!("compressor", __MODULE_compressor, Compressor::default());
+dynamic_node!("limiter", __MODULE_limiter, Limiter::new(1.0));
+dynamic_node!("log", __MODULE_log, Log::<Value<(f32x8,)>>::default());
+dynamic_node!("stutter_reverb", __MODULE_stutter_reverb, Stutter::rand_pan(50, 0.35));
+dynamic_node!("soft_clip", __MODULE_soft_clip, SoftClip);
+dynamic_node!("looper", __MODULE_looper, Looper::default());
+dynamic_node!("turing_machine", __MODULE_turing_machine, crate::instruments::InlineSoftTuringMachine::default());
+dynamic_node!("smooth_leader", __MODULE_smooth_leader, crate::instruments::SmoothLeader::new());
+dynamic_node!("add", __MODULE_add, Add::<f32x8, f32x8>::default());
+dynamic_node!("sub", __MODULE_sub, Sub::<f32x8, f32x8>::default());
+dynamic_node!("mul", __MODULE_mul, Mul::<f32x8, f32x8>::default());
+dynamic_node!("div", __MODULE_div, Div::<f32x8, f32x8>::default());
+dynamic_node!("split", __MODULE_split, Split);
+dynamic_node!("rescale", __MODULE_rescale, ModulatedRescale);
+dynamic_node!("toggle", __MODULE_toggle, Toggle::default());
+dynamic_node!("delay", __MODULE_delay, Delay::new(1.0));
+dynamic_node!("imp", __MODULE_impulse, Impulse::default());
+dynamic_node!("pimp", __MODULE_pimpulse, ProbImpulse::default());
+dynamic_node!("aimp", __MODULE_aimpulse, AccumulatorImpulse::default());
+dynamic_node!("pow", __MODULE_pow, ToPower);
+dynamic_node!("reg", __MODULE_reg, Register::default());
+dynamic_node!("comp", __MODULE_comp, Comparator);
+dynamic_node!("svfl", __MODULE_svf_low, SimperSvf::low_pass());
+dynamic_node!("svfh", __MODULE_svf_high, SimperSvf::high_pass());
+dynamic_node!("svfb", __MODULE_svf_band, SimperSvf::band_pass());
+dynamic_node!("svfn", __MODULE_svf_notch, SimperSvf::notch());

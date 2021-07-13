@@ -1,4 +1,10 @@
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    convert::TryFrom
+};
+use portmidi as pm;
+use gilrs::{Gilrs, EventType, Event};
+
 use ::instruments::{instruments::*, simd_graph::*, type_list::Value, InstrumentSynth, dynamic_graph::{DynamicGraph, BoxedDynamicNode}};
 use packed_simd_2::f32x8;
 
@@ -52,6 +58,73 @@ fn main() {
     } else {
         DynamicGraph::parse(DEFAULT_SYNTH).unwrap()
     };
+
+    let inputs = Arc::clone(&graph.external_inputs);
+    std::thread::spawn(move || {
+        let mut gilrs = Gilrs::new().unwrap();
+
+        let context = pm::PortMidi::new().unwrap();
+        use std::time::Duration;
+        let timeout = Duration::from_millis(10);
+
+        let info = context.device(1).unwrap();
+        let in_ports = context
+             .devices()
+             .unwrap()
+             .into_iter()
+             .filter_map(|dev| context.input_port(dev, 1024).ok())
+             .collect::<Vec<_>>();
+         loop {
+            {
+                let mut inputs = inputs.lock().unwrap();
+                while let Some(Event { id, event, time }) = gilrs.next_event() {
+                    match event {
+                        EventType::AxisChanged(a, v, ..) => {
+                            inputs.insert(format!("pad_{:?}", a), v);
+                        }
+                        EventType::ButtonPressed(b, ..) => {
+                            inputs.insert(format!("pad_{:?}", b), 1.0);
+                        }
+                        EventType::ButtonReleased(b, ..) => {
+                            inputs.insert(format!("pad_{:?}", b), 0.0);
+                        }
+                        _ => ()
+                    }
+                }
+                 for port in &in_ports {
+                     if let Ok(Some(events)) = port.read_n(1024) {
+                         for event in events {
+                            let data = [event.message.status, event.message.data1, event.message.data2, event.message.data3];
+                            let message = wmidi::MidiMessage::try_from(&data[..]).unwrap();
+                            match message {
+                                wmidi::MidiMessage::NoteOn(c,n,v) => {
+                                    inputs.insert(format!("midi_{}_freq", c.index()), n.to_freq_f32());
+                                    inputs.insert(format!("midi_{}_velocity", c.index()), u8::try_from(v).unwrap() as f32 / 127.0);
+                                }
+                                wmidi::MidiMessage::NoteOff(c,n,v) => {
+                                    inputs.insert(format!("midi_{}_freq", c.index()), n.to_freq_f32());
+                                    inputs.insert(format!("midi_{}_velocity", c.index()), 0.0);
+                                }
+                                wmidi::MidiMessage::PitchBendChange(c,b) => {
+                                    inputs.insert(format!("midi_{}_pitch_bend", c.index()), (u16::try_from(b).unwrap() as f32 / 2.0f32.powi(14) - 0.5) * 2.0);
+                                }
+                                wmidi::MidiMessage::ControlChange(c,wmidi::ControlFunction::MODULATION_WHEEL,v) => {
+                                    let v = u8::try_from(v).unwrap() as f32 / 127.0;
+                                    inputs.insert(format!("midi_{}_mod_wheel", c.index()), v);
+                                } 
+                                wmidi::MidiMessage::ControlChange(c,wmidi::ControlFunction::DAMPER_PEDAL,v) =>{
+                                    let v = u8::try_from(v).unwrap() as f32 / 127.0;
+                                    inputs.insert(format!("midi_{}_pedal", c.index()), v);
+                                }
+                                _ => ()
+                            }
+                         }
+                     }
+                 }
+            }
+              std::thread::sleep(timeout);
+         }
+    });
 
     let reload_data = Arc::clone(&graph.reload_data);
     let watch_list = Arc::clone(&graph.watch_list);

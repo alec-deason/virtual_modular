@@ -16,6 +16,10 @@ inline_tweak = "1.0.8"
 concat-idents = "1.1.2"
 pom = "3.2.0"
 linkme = "0.2.6"
+portmidi = "0.2.5"
+wmidi = "4.0.6"
+uuid = { version="0.8.2", features=["v4"] }
+gilrs = "0.8.1"
 
 [dev-dependencies]
 cpal = "0.13"
