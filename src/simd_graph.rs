@@ -7,7 +7,6 @@ use std::{
     cell::RefCell,
     f32::consts::{PI,TAU},
     marker::PhantomData,
-    rc::Rc,
     convert::TryFrom,
     sync::{Arc, Mutex},
 };
@@ -321,6 +320,24 @@ pub fn curry2<A: Node, B: Node>(
         Default::default(),
     )
 }
+pub fn curry3<A: Node, B: Node>(
+    a: A,
+    b: B,
+) -> Curry<
+    A,
+    B,
+    (A::Output, Value<<B::Input as ValueT>::Cdr>),
+    (A::Input, Value<<B::Input as ValueT>::Cdr>),
+    Value<<B::Input as ValueT>::Cdr>,
+> {
+    Curry(
+        a,
+        b,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    )
+}
 
 #[derive(Clone)]
 pub struct Pipe<A: Clone, B: Clone>(pub A, pub B);
@@ -386,6 +403,22 @@ impl<A: Clone> Node for Constant<A> {
         Value((self.0.clone(),))
     }
 }
+
+#[derive(Clone,Default)]
+pub struct PulseOnLoad(bool);
+impl Node for PulseOnLoad {
+    type Input = NoValue;
+    type Output = Value<(f32,)>;
+    #[inline]
+    fn process(&mut self, _input: Self::Input) -> Self::Output {
+        if self.0 {
+            Value((0.0,))
+        } else {
+            self.0 = true;
+            Value((1.0,))
+        }
+    }
+}
 #[derive(Clone)]
 pub struct RawConstant<A:ValueT>(pub A::Inner);
 impl<A: ValueT> Node for RawConstant<A> {
@@ -429,14 +462,14 @@ impl Node for One {
 }
 
 #[derive(Clone)]
-pub struct RcConstant<A>(pub Rc<RefCell<A>>);
-impl<A> RcConstant<A> {
-    pub fn new(a: A) -> (Self, Rc<RefCell<A>>) {
-        let cell = Rc::new(RefCell::new(a));
-        (Self(Rc::clone(&cell)), cell)
+pub struct ArcConstant<A>(pub Arc<RefCell<A>>);
+impl<A> ArcConstant<A> {
+    pub fn new(a: A) -> (Self, Arc<RefCell<A>>) {
+        let cell = Arc::new(RefCell::new(a));
+        (Self(Arc::clone(&cell)), cell)
     }
 }
-impl<A: Clone> Node for RcConstant<A> {
+impl<A: Clone> Node for ArcConstant<A> {
     type Input = NoValue;
     type Output = Value<(A,)>;
     #[inline]
@@ -446,14 +479,14 @@ impl<A: Clone> Node for RcConstant<A> {
 }
 
 #[derive(Clone)]
-pub struct RawRcConstant<A:ValueT>(pub Rc<RefCell<A::Inner>>);
-impl<A:ValueT> RawRcConstant<A> {
-    pub fn new(a: A::Inner) -> (Self, Rc<RefCell<A::Inner>>) {
-        let cell = Rc::new(RefCell::new(a));
-        (Self(Rc::clone(&cell)), cell)
+pub struct RawArcConstant<A:ValueT>(pub Arc<RefCell<A::Inner>>);
+impl<A:ValueT> RawArcConstant<A> {
+    pub fn new(a: A::Inner) -> (Self, Arc<RefCell<A::Inner>>) {
+        let cell = Arc::new(RefCell::new(a));
+        (Self(Arc::clone(&cell)), cell)
     }
 }
-impl<A: ValueT> Node for RawRcConstant<A> {
+impl<A: ValueT> Node for RawArcConstant<A> {
     type Input = NoValue;
     type Output = A;
     #[inline]
@@ -463,10 +496,10 @@ impl<A: ValueT> Node for RawRcConstant<A> {
 }
 
 #[derive(Clone)]
-pub struct Bridge<A: ValueT>(pub Rc<RefCell<A::Inner>>);
+pub struct Bridge<A: ValueT>(pub Arc<RefCell<A::Inner>>);
 impl<A: ValueT> Bridge<A> {
-    pub fn new(a: A::Inner) -> (Self, RcConstant<A::Inner>) {
-        let (constant, cell) = RcConstant::new(a);
+    pub fn new(a: A::Inner) -> (Self, ArcConstant<A::Inner>) {
+        let (constant, cell) = ArcConstant::new(a);
         (Self(cell), constant)
     }
 }
@@ -481,10 +514,10 @@ impl<A: ValueT> Node for Bridge<A> {
 }
 
 #[derive(Clone)]
-pub struct RawBridge<A: ValueT>(pub Rc<RefCell<A::Inner>>);
+pub struct RawBridge<A: ValueT>(pub Arc<RefCell<A::Inner>>);
 impl<A: ValueT> RawBridge<A> {
-    pub fn new(a: A::Inner) -> (Self, RawRcConstant<A>) {
-        let (constant, cell) = RawRcConstant::new(a);
+    pub fn new(a: A::Inner) -> (Self, RawArcConstant<A>) {
+        let (constant, cell) = RawArcConstant::new(a);
         (Self(cell), constant)
     }
 }
@@ -907,7 +940,7 @@ impl Node for LowPass {
 enum BiquadConfig {
     LowPass,
     HighPass,
-    PeakingEq(Rc<RefCell<(f32,)>>),
+    PeakingEq(Arc<RefCell<(f32,)>>),
     Notch,
     BandPass,
 }
@@ -1057,7 +1090,7 @@ impl Biquad {
     }
 
     pub fn peaking_eq() -> PeakingEq {
-        let db_gain =  Rc::new(RefCell::new((0.0,)));
+        let db_gain =  Arc::new(RefCell::new((0.0,)));
         PeakingEq(
             Self {
                 config: BiquadConfig::PeakingEq(db_gain.clone()),
@@ -1075,7 +1108,7 @@ impl Biquad {
     }
 }
 #[derive(Clone)]
-pub struct PeakingEq(Biquad, Rc<RefCell<(f32,)>>);
+pub struct PeakingEq(Biquad, Arc<RefCell<(f32,)>>);
 
 
 impl Node for Biquad {
@@ -1132,7 +1165,7 @@ macro_rules! file_constants {
         {
             use serde::Deserialize;
             use std::{
-                rc::Rc,
+                rc::Arc,
                 cell::RefCell,
             };
             #[derive(Deserialize)]
@@ -1143,11 +1176,11 @@ macro_rules! file_constants {
             }
             struct RefCellContainer {
                 $(
-                    $name: Rc<RefCell<$t>>,
+                    $name: Arc<RefCell<$t>>,
                 )*
             }
             $(
-                let $name = RcConstant::new($initial_value);
+                let $name = ArcConstant::new($initial_value);
             )*
             let cell_container = RefCellContainer {
                 $(
@@ -1189,8 +1222,8 @@ impl Node for Choice {
 }
 
 #[derive(Clone)]
-pub struct RcChoice(pub Rc<RefCell<Vec<f32>>>);
-impl Node for RcChoice {
+pub struct ArcChoice(pub Arc<RefCell<Vec<f32>>>);
+impl Node for ArcChoice {
     type Input = Value<(f32x8,)>;
     type Output = Value<(f32x8,)>;
 
@@ -1423,9 +1456,9 @@ impl Node for Invert {
 }
 
 #[derive(Clone)]
-pub struct GateSequencer(Rc<RefCell<Vec<bool>>>, usize, bool);
+pub struct GateSequencer(Arc<RefCell<Vec<bool>>>, usize, bool);
 impl GateSequencer {
-    pub fn new(values: Rc<RefCell<Vec<bool>>>) -> Self {
+    pub fn new(values: Arc<RefCell<Vec<bool>>>) -> Self {
         Self(values, 0, false)
     }
 }
@@ -2343,12 +2376,12 @@ pub struct Interpolator {
     stop_value: f32,
     time: f32,
     per_sample: f32,
-    reset: Rc<RefCell<Option<(f32, f32, f32, f32)>>>,
+    reset: Arc<RefCell<Option<(f32, f32, f32, f32)>>>,
 }
 
 impl Interpolator {
-    pub fn new(v: f32) -> (Self, Rc<RefCell<Option<(f32, f32, f32, f32)>>>) {
-        let cell = Rc::new(RefCell::new(None));
+    pub fn new(v: f32) -> (Self, Arc<RefCell<Option<(f32, f32, f32, f32)>>>) {
+        let cell = Arc::new(RefCell::new(None));
         (
             Self {
                 start_time: 0.0,
@@ -2465,7 +2498,7 @@ impl<F: Fn(f32x8) -> f32x8 + Clone> Node for BFunc<F> {
 
 #[derive(Clone)]
 pub struct Mixer<A: ValueT, B: ValueT>(
-    Vec<(Box<dyn Node<Input = A, Output = B>>, Rc<RefCell<Box<dyn Node<Input=NoValue, Output=Value<(f32,)>>>>>)>,
+    Vec<(Box<dyn Node<Input = A, Output = B>>, Arc<RefCell<Box<dyn Node<Input=NoValue, Output=Value<(f32,)>>>>>)>,
 );
 
 impl<A: ValueT, B: ValueT> Default for Mixer<A, B> {
@@ -2478,7 +2511,7 @@ impl<A: ValueT, B: ValueT> Mixer<A, B> {
     pub fn add_track(
         &mut self,
         track: impl Node<Input = A, Output = B> + 'static,
-    ) -> Rc<RefCell<Box< dyn Node<Input=NoValue, Output=Value<(f32,)>>>>> {
+    ) -> Arc<RefCell<Box< dyn Node<Input=NoValue, Output=Value<(f32,)>>>>> {
         let gain = Constant(1.0);
         self.add_track_with_gain(track, gain)
     }
@@ -2486,10 +2519,10 @@ impl<A: ValueT, B: ValueT> Mixer<A, B> {
         &mut self,
         track: impl Node<Input = A, Output = B> + 'static,
         gain: impl Node<Input=NoValue, Output=Value<(f32,)>> + 'static,
-    ) -> Rc<RefCell<Box<dyn Node<Input=NoValue, Output=Value<(f32,)>>>>> {
+    ) -> Arc<RefCell<Box<dyn Node<Input=NoValue, Output=Value<(f32,)>>>>> {
         let gain: Box<dyn Node<Input=NoValue, Output=Value<(f32,)>>> = Box::new(gain);
-        let gain = Rc::new(RefCell::new(gain));
-        self.0.push((Box::new(track), Rc::clone(&gain)));
+        let gain = Arc::new(RefCell::new(gain));
+        self.0.push((Box::new(track), Arc::clone(&gain)));
         gain
     }
 }
@@ -2955,9 +2988,160 @@ impl Node for SimperSvf {
             out  += 0.5*self.low;
             r = r.replace(i,out);
         }
+        if !self.notch.is_finite() {
+            self.notch = 0.0;
+        }
+        if !self.low.is_finite() {
+            self.low = 0.0;
+        }
+        if !self.high.is_finite() {
+            self.high = 0.0;
+        }
+        if !self.band.is_finite() {
+            self.band = 0.0;
+        }
         Value((r,))
     }
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate=rate;
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct Portamento(f32,f32);
+impl Node for Portamento {
+    type Input = Value<(f32x8,f32x8)>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((transition_time,sig)) = input;
+        let mut r = sig;
+        for i in 0..f32x8::lanes() {
+            let transition_time = transition_time.extract(i);
+            let sig = sig.extract(i);
+            if self.1 > 0.0 {
+                let m = transition_time;
+                let n = sig*m + self.0*(1.0-m);
+                r = r.replace(i, n);
+                self.0 = n;
+            }
+        }
+        Value((r,))
+    }
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.1=1.0/rate;
+    }
+}
+
+#[derive(Clone)]
+pub struct Reverb {
+    delay_l: Vec<f32x8>,
+    delay_r: Vec<f32x8>,
+    taps: Vec<(f32,f32)>,
+    tap_total: f32,
+    idx_l: usize,
+    idx_r: usize,
+    per_sample: f32,
+}
+impl Reverb {
+    pub fn new() -> Self {
+        let mut rng = StdRng::seed_from_u64(2);
+        let taps:Vec<_> = (0..10).map(|_| (rng.gen_range(0.001..1.0),rng.gen::<f32>())).collect();
+        let tap_total = taps.iter().map(|(_,t)| t).sum::<f32>();
+        Self {
+            delay_l: vec![f32x8::splat(0.0); ((0.09*44100.0)/8.0) as usize],
+            delay_r: vec![f32x8::splat(0.0); ((0.0904*44100.0)/8.0) as usize],
+            taps,
+            tap_total,
+            idx_l: 0,
+            idx_r: 0,
+            per_sample: 0.0,
+        }
+    }
+}
+impl Node for Reverb {
+    type Input = Value<(f32,(f32x8,f32x8))>;
+    type Output = Value<(f32x8,f32x8)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((len,(left,right))) = input;
+        let mut r_l = f32x8::splat(0.0);
+        let mut r_r = f32x8::splat(0.0);
+        let Reverb {
+            delay_l,
+            delay_r,
+            taps,
+            tap_total,
+            idx_l,
+            idx_r,
+            per_sample,
+        } = self;
+        let len = len.max(0.001).min(1.0);
+        for (fti,g) in &self.taps {
+            for (dl, idx, r) in [(&mut *delay_l, &mut *idx_l, &mut r_l), (delay_r, idx_r, &mut r_r)] {
+                let l = 1.0/(1.0+fti*len*dl.len() as f32*self.per_sample*8.0).powi(2);
+                let l = (l*g)/ *tap_total;
+                let mut i = *idx as i32 - (fti * dl.len() as f32) as i32;
+                if i < 0 {
+                    i += dl.len() as i32;
+                }
+                let dl = dl[i as usize % dl.len()];
+                *r += dl*l;
+            }
+        }
+        self.delay_l[self.idx_l] += left - r_l;
+        self.delay_r[self.idx_r] += right - r_r;
+        self.delay_l[self.idx_l] *= 0.5;
+        self.delay_r[self.idx_r] *= 0.5;
+        self.idx_l = (self.idx_l+1) % self.delay_l.len();
+        self.idx_r = (self.idx_r+1) % self.delay_r.len();
+        Value((r_l+left, r_r+right))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate;
+    }
+}
+
+#[derive(Clone)]
+pub struct ModableDelay {
+    delay: Vec<f32>,
+    idx: usize,
+}
+impl ModableDelay {
+    pub fn new() -> Self {
+        Self {
+            delay: vec![0.0; (0.09*44100.0) as usize],
+            idx: 0,
+        }
+    }
+}
+impl Node for ModableDelay {
+    type Input = Value<(f32,f32x8)>;
+    type Output = Value<(f32x8,)>;
+
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((len,sig)) = input;
+        let len = len.max(0.001).min(1.0);
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let sig = sig.extract(i);
+            self.idx = (self.idx+1) % self.delay.len();
+            self.delay[self.idx] = sig;
+            let mut line_end = self.idx as f32 - self.delay.len() as f32 * len;
+            while line_end < 0.0 {
+                line_end += self.delay.len() as f32;
+            }
+            line_end %= self.delay.len() as f32;
+            let t = line_end.fract();
+            let a = self.delay[line_end.floor() as usize];
+            let b = self.delay[line_end.ceil() as usize % self.delay.len()];
+            let v = a * (1.0-t) + b * t;
+            r = r.replace(i, v);
+        }
+        Value((r,))
     }
 }

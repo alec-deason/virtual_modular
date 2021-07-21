@@ -423,7 +423,7 @@ impl DynamicGraph {
     }
 
 
-    fn parse_inner(data: &str) -> Result<Vec<Line>, String> {
+    pub fn parse_inner(data: &str) -> Result<Vec<Line>, String> {
         use pom::parser::*;
         use pom::parser::Parser;
         use std::str::{self, FromStr};
@@ -592,7 +592,7 @@ impl DynamicGraph {
     }
 }
 #[derive(Debug)]
-enum Line {
+pub enum Line {
     ExternalParam(String, String),
     Node(String, String, Option<BoxedDynamicNode>),
     NodeDefinition(String, Vec<Line>),
@@ -686,7 +686,6 @@ dynamic_node!("div", __MODULE_div, Div::<f32x8, f32x8>::default());
 dynamic_node!("split", __MODULE_split, Split);
 dynamic_node!("rescale", __MODULE_rescale, ModulatedRescale);
 dynamic_node!("toggle", __MODULE_toggle, Toggle::default());
-dynamic_node!("delay", __MODULE_delay, Delay::new(1.0));
 dynamic_node!("imp", __MODULE_impulse, Impulse::default());
 dynamic_node!("pimp", __MODULE_pimpulse, ProbImpulse::default());
 dynamic_node!("aimp", __MODULE_aimpulse, AccumulatorImpulse::default());
@@ -697,3 +696,8 @@ dynamic_node!("svfl", __MODULE_svf_low, SimperSvf::low_pass());
 dynamic_node!("svfh", __MODULE_svf_high, SimperSvf::high_pass());
 dynamic_node!("svfb", __MODULE_svf_band, SimperSvf::band_pass());
 dynamic_node!("svfn", __MODULE_svf_notch, SimperSvf::notch());
+dynamic_node!("portamento", __MODULE_portamento, Portamento::default());
+dynamic_node!("reverb", __MODULE_reverb, Reverb::new());
+dynamic_node!("fold", __MODULE_folder, Folder);
+dynamic_node!("delay", __MODULE_modable_delay, ModableDelay::new());
+dynamic_node!("pulse_on_load", __MODULE_pulse_on_load, PulseOnLoad::default());

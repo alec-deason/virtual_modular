@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    rc::Rc,
+    sync::Arc,
     cell::RefCell,
 };
 use concat_idents::concat_idents;
@@ -21,7 +21,7 @@ macro_rules! routing {
             $(
                 $field_name: (
                     Box<dyn Node<Input=NoValue, Output=Value<$value_type>>>,
-                    RawRcConstant<Value<$value_type>>,
+                    RawArcConstant<Value<$value_type>>,
                 ),
             )*
         }
@@ -32,7 +32,7 @@ macro_rules! routing {
                     $(
                         $field_name: (
                             Box::new(RawConstant(<$value_type as Default>::default())),
-                            RawRcConstant::new(<$value_type as Default>::default()).0,
+                            RawArcConstant::new(<$value_type as Default>::default()).0,
                         ),
                     )*
                 }
@@ -43,12 +43,12 @@ macro_rules! routing {
             $(
                 concat_idents!(bridge_name = $field_name, _, bridge {
                     pub fn $field_name(&mut self, n: impl Node<Input=NoValue, Output=Value<$value_type>> + 'static + Clone) {
-                        let b_in = RawBridge(Rc::clone(&self.$field_name.1.0));
+                        let b_in = RawBridge(Arc::clone(&self.$field_name.1.0));
                         self.$field_name.0 = Box::new(Pipe(n, b_in));
                     }
 
                     concat_idents!(fn_name = $field_name, _, bridge {
-                           fn fn_name(&self) -> RawRcConstant<Value<$value_type>> {
+                           fn fn_name(&self) -> RawArcConstant<Value<$value_type>> {
                                self.$field_name.1.clone()
                            }
                     });
@@ -1032,7 +1032,7 @@ pub struct SoftTuringMachine {
 #[derive(Clone)]
 pub struct InlineSoftTuringMachine {
     sequence: Vec<Option<f32>>,
-    pulse_outs: HashMap<usize, Rc<RefCell<f32>>>,
+    pulse_outs: HashMap<usize, Arc<RefCell<f32>>>,
     idx: usize,
     triggered: bool,
 }
@@ -1057,8 +1057,8 @@ impl Default for SoftTuringMachine {
     }
 }
 impl InlineSoftTuringMachine {
-   pub fn pulse(&mut self, idx: usize) -> Rc<RefCell<f32>> {
-        self.pulse_outs.entry(idx).or_insert_with(|| Rc::new(RefCell::new(0.0))).clone()
+   pub fn pulse(&mut self, idx: usize) -> Arc<RefCell<f32>> {
+        self.pulse_outs.entry(idx).or_insert_with(|| Arc::new(RefCell::new(0.0))).clone()
     }
 }
 impl Node for SoftTuringMachine {
@@ -1128,14 +1128,14 @@ impl Node for InlineSoftTuringMachine {
 
 #[derive(Clone)]
 pub struct ShiftRegister {
-    pub registers: Vec<Rc<RefCell<f32>>>,
+    pub registers: Vec<Arc<RefCell<f32>>>,
     triggered: bool,
     initialized: bool,
 }
 impl ShiftRegister {
     pub fn new() -> Self {
         Self {
-            registers: (0..8).map(|_| Rc::new(RefCell::new(0.0))).collect(),
+            registers: (0..8).map(|_| Arc::new(RefCell::new(0.0))).collect(),
             triggered: false,
             initialized: false,
         }

@@ -20,6 +20,7 @@ portmidi = "0.2.5"
 wmidi = "4.0.6"
 uuid = { version="0.8.2", features=["v4"] }
 gilrs = "0.8.1"
+glam = "0.16.0"
 
 [dev-dependencies]
 cpal = "0.13"

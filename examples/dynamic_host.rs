@@ -12,39 +12,26 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 const DEFAULT_SYNTH: &'static str = "# Sequence
 rhythm_gate=sine(16.0)
-rhythm_rnd=turing_machine(0.0,0.9,8)
-(0,rhythm_gate,0,rhythm_rnd)
+rhythm_rnd=turing_machine(rhythm_gate,0.9,8)
 
-rnd=turing_machine(0,0.9,8)
-(0,rhythm_rnd,0,rnd)
+rnd=turing_machine(rhythm_rnd,0.9,8)
 
 # Pitch mapping
-pitch=rescale(440.0,880.0)
-(0,rnd,2,pitch)
+pitch=rescale(440.0,880.0,rnd)
 
 # Oscillator
-top_tone=saw
-(0,pitch,0,top_tone)
-sub_pitch=mul(0.25)
-(0,pitch,1,sub_pitch)
-sub_tone=sine
-(0,sub_pitch,0,sub_tone)
-tone=add
-(0,top_tone,0,tone)
-(0,sub_tone,1,tone)
-envelope=ad
-(0,rhythm_rnd,0,envelope)
-enveloped_tone=mul
-(0,envelope,0,enveloped_tone)
-(0,tone,1,enveloped_tone)
-
+top_tone=saw(pitch)
+sub_pitch=mul(0.25,pitch)
+sub_tone=sine(sub_pitch)
+tone=add(top_tone,sub_tone)
+envelope=ad(0.01,0.02,rhythm_rnd)
+enveloped_tone=mul(envelope,tone)
 
 # Final
-filter=lpf(440,0.7)
-(0,enveloped_tone,2,filter)
+filter=lpf(440,0.7,enveloped_tone)
 
-(0,filter,0,output)
-(0,filter,1,output)
+(output,0,filter)
+(output,1,filter)
 ";
 
 

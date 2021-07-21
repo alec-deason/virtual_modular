@@ -1,4 +1,4 @@
-use ::instruments::{instruments::*, simd_graph::*, type_list::Value, InstrumentSynth};
+use ::instruments::{instruments::*, simd_graph::*, type_list::{Value, NoValue}, InstrumentSynth};
 use packed_simd_2::f32x8;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -46,33 +46,6 @@ fn main() {
         ),
         curry(pulse.clone(), SampleAndHold::default()),
     );
-    let pitch3 = Pipe(
-        Pipe(
-            Pipe(Constant(0.1 * 5.0), LfoSine::positive(0.5)),
-            Rescale(30.0, 200.0),
-        ),
-        curry(pulse.clone(), SampleAndHold::default()),
-    );
-    let pitch4 = Pipe(
-        Pipe(
-            Pipe(Constant(0.1 * 7.0), LfoSine::positive(0.6)),
-            Rescale(60.0, 600.0),
-        ),
-        curry(pulse.clone(), SampleAndHold::default()),
-    );
-    let pitch4 = Pipe(
-        Stack::new(
-            pitch4,
-            Pipe(
-                Pipe(
-                    Pipe(Constant(0.13 * 7.0), LfoSine::positive(0.7)),
-                    Rescale(60.0, 60.0),
-                ),
-                curry(pulse.clone(), SampleAndHold::default()),
-            ),
-        ),
-        Add::default(),
-    );
 
     let q1 = Pipe(
         Pipe(
@@ -85,20 +58,6 @@ fn main() {
         Pipe(
             Pipe(Constant(0.1 * 13.0), LfoSine::positive(1.51)),
             Rescale(3.0, 40.0),
-        ),
-        curry(pulse.clone(), SampleAndHold::default()),
-    );
-    let q3 = Pipe(
-        Pipe(
-            Pipe(Constant(0.1 * 15.0), LfoSine::positive(1.52)),
-            Rescale(1.0, 30.0),
-        ),
-        curry(pulse.clone(), SampleAndHold::default()),
-    );
-    let q4 = Pipe(
-        Pipe(
-            Pipe(Constant(0.1 * 17.0), LfoSine::positive(1.53)),
-            Rescale(0.1, 30.0),
         ),
         curry(pulse.clone(), SampleAndHold::default()),
     );
@@ -121,12 +80,6 @@ fn main() {
         ),
         filter,
     );
-    let filter = curry(Branch::new(pitch3, q3), Biquad::peaking_eq(|| 5.0));
-    let plink = Pipe(plink, filter);
-    let filter = curry(Branch::new(pitch4, q4), Biquad::peaking_eq(|| 5.0));
-    let plink = Pipe(plink, filter);
-    let plink = Pipe(plink, BFunc(|v: f32x8| v.tanh()));
-
     let ping = Pipe(
         Pipe(plink, b_in),
         curry(Constant(f32x8::splat(0.7)), Mul::<f32x8, f32x8>::default()),
@@ -134,7 +87,7 @@ fn main() {
     let ping = Pipe(ping, BFunc(|v: f32x8| v.tanh()));
 
     let ping = Pipe(ping, Split);
-    let ping = Pipe(ping, Stutter::rand_pan(50, 0.15));
+    let ping = Pipe(ping, curry2(Constant(f32x8::splat(1.0)), Stutter::rand_pan(50, 0.15)));
 
     mixer.add_track(ping);
 
