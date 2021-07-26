@@ -701,3 +701,4 @@ dynamic_node!("reverb", __MODULE_reverb, Reverb::new());
 dynamic_node!("fold", __MODULE_folder, Folder);
 dynamic_node!("delay", __MODULE_modable_delay, ModableDelay::new());
 dynamic_node!("pulse_on_load", __MODULE_pulse_on_load, PulseOnLoad::default());
+dynamic_node!("c", __MODULE_identity, Identity);

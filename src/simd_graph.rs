@@ -1501,7 +1501,7 @@ impl<A: Clone> Node for Sequencer<A> {
 
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-        let gate = (input.0).0.extract(0);
+        let gate = (input.0).0.max_element();
         if !self.2 && gate > 0.5 {
             self.1 = (self.1 + 1) % self.0.len();
             self.2 = true;
@@ -3038,6 +3038,8 @@ impl Node for Portamento {
 pub struct Reverb {
     delay_l: Vec<f32x8>,
     delay_r: Vec<f32x8>,
+    allpass_l: AllPass,
+    allpass_r: AllPass,
     taps: Vec<(f32,f32)>,
     tap_total: f32,
     idx_l: usize,
@@ -3052,6 +3054,8 @@ impl Reverb {
         Self {
             delay_l: vec![f32x8::splat(0.0); ((0.09*44100.0)/8.0) as usize],
             delay_r: vec![f32x8::splat(0.0); ((0.0904*44100.0)/8.0) as usize],
+            allpass_l: AllPass::default(),
+            allpass_r: AllPass::default(),
             taps,
             tap_total,
             idx_l: 0,
@@ -3072,6 +3076,8 @@ impl Node for Reverb {
         let Reverb {
             delay_l,
             delay_r,
+            allpass_l,
+            allpass_r,
             taps,
             tap_total,
             idx_l,
@@ -3079,11 +3085,11 @@ impl Node for Reverb {
             per_sample,
         } = self;
         let len = len.max(0.001).min(1.0);
-        for (fti,g) in &self.taps {
+        for (fti,g) in taps {
             for (dl, idx, r) in [(&mut *delay_l, &mut *idx_l, &mut r_l), (delay_r, idx_r, &mut r_r)] {
-                let l = 1.0/(1.0+fti*len*dl.len() as f32*self.per_sample*8.0).powi(2);
-                let l = (l*g)/ *tap_total;
-                let mut i = *idx as i32 - (fti * dl.len() as f32) as i32;
+                let l = 1.0/(1.0+ *fti*len*dl.len() as f32 * *per_sample*8.0).powi(2);
+                let l = (l* *g)/ *tap_total;
+                let mut i = *idx as i32 - (*fti * dl.len() as f32) as i32;
                 if i < 0 {
                     i += dl.len() as i32;
                 }
@@ -3091,10 +3097,10 @@ impl Node for Reverb {
                 *r += dl*l;
             }
         }
-        self.delay_l[self.idx_l] += left - r_l;
-        self.delay_r[self.idx_r] += right - r_r;
-        self.delay_l[self.idx_l] *= 0.5;
-        self.delay_r[self.idx_r] *= 0.5;
+        r_l = (self.delay_l[self.idx_l] + left - r_l) * 0.5;
+        r_r = (self.delay_r[self.idx_r] + right - r_r) * 0.5;
+        self.delay_l[self.idx_l] = (self.allpass_l.process(Value((f32x8::splat(1.0), self.delay_l[self.idx_l]))).0).0;
+        self.delay_r[self.idx_r] = (self.allpass_r.process(Value((f32x8::splat(1.0), self.delay_r[self.idx_r]))).0).0;
         self.idx_l = (self.idx_l+1) % self.delay_l.len();
         self.idx_r = (self.idx_r+1) % self.delay_r.len();
         Value((r_l+left, r_r+right))
@@ -3143,5 +3149,16 @@ impl Node for ModableDelay {
             r = r.replace(i, v);
         }
         Value((r,))
+    }
+}
+
+#[derive(Clone)]
+pub struct Identity;
+impl Node for Identity {
+    type Input = Value<(f32,)>;
+    type Output = Value<(f32,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        input
     }
 }
