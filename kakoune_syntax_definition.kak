@@ -22,7 +22,11 @@ provide-module synthsyntax %&
 
     # Highlighting for node definitions.
     add-highlighter shared/synthsyntax/other/ \
-        regex \b([^=\n]+)=([^(\[\n]+) 1:variable 2:function
+        regex \b([^=\n]+)= 1:variable
+
+    # Highlighting for node constructors
+    add-highlighter shared/synthsyntax/other/ \
+        regex \b[A-Z][^\(\[=,]+ 0:function
 
     # Highlighting for patches.
     add-highlighter shared/synthsyntax/other/ \

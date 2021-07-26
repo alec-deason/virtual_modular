@@ -63,6 +63,7 @@ impl<A: DynamicValue, B:DynamicValue, N: Node<Input=A, Output=B> + Clone> Dynami
 #[derive(Clone, Debug)]
 pub enum Term {
     Node(String, usize),
+    NodeConstructor(String, Option<Vec<Expression>>),
     Number(f32),
 }
 #[derive(Clone, Debug)]
@@ -99,9 +100,19 @@ impl Expression {
                     Term::Node(n, c) => {
                         lines.push(Line::Edge(n.clone(), *c as u32, target_node, target_port as u32));
                     }
+                    Term::NodeConstructor(constructor_name, parameters) => {
+                        let n = uuid::Uuid::new_v4().to_string();
+                        lines.push(Line::Node(n.clone(), constructor_name.clone(), None));
+                        if let Some(parameters) = parameters {
+                            for (i, e) in parameters.iter().enumerate() {
+                                lines.extend(e.as_lines(n.clone(), i));
+                            }
+                        }
+                        lines.push(Line::Edge(n, 0, target_node, target_port as u32));
+                    }
                     Term::Number(v) => {
                         let n = uuid::Uuid::new_v4().to_string();
-                        lines.push(Line::Node(n.clone(), "c".to_string(), Some(BoxedDynamicNode::new(Constant(f32x8::splat(*v))))));
+                        lines.push(Line::Node(n.clone(), "Constant".to_string(), Some(BoxedDynamicNode::new(Constant(f32x8::splat(*v))))));
                         lines.push(Line::Edge(n, 0, target_node, target_port as u32));
                     }
                 }
@@ -111,10 +122,10 @@ impl Expression {
                 lines.extend(a.as_lines(n.clone(), 0));
                 lines.extend(b.as_lines(n.clone(), 1));
                 match o {
-                    Operator::Add => lines.push(Line::Node(n.clone(), "add".to_string(), None)),
-                    Operator::Sub => lines.push(Line::Node(n.clone(), "sub".to_string(), None)),
-                    Operator::Mul => lines.push(Line::Node(n.clone(), "mul".to_string(), None)),
-                    Operator::Div => lines.push(Line::Node(n.clone(), "div".to_string(), None)),
+                    Operator::Add => lines.push(Line::Node(n.clone(), "Add".to_string(), None)),
+                    Operator::Sub => lines.push(Line::Node(n.clone(), "Sub".to_string(), None)),
+                    Operator::Mul => lines.push(Line::Node(n.clone(), "Mul".to_string(), None)),
+                    Operator::Div => lines.push(Line::Node(n.clone(), "Div".to_string(), None)),
                 }
                 lines.push(Line::Edge(n, 0, target_node, target_port as u32));
             }
@@ -427,16 +438,40 @@ impl DynamicGraph {
         use pom::parser::*;
         use pom::parser::Parser;
         use std::str::{self, FromStr};
+
+        fn node_name<'a>() -> Parser<'a, u8, String> {
+            let number = one_of(b"0123456789");
+            (one_of(b"abcdefghijklmnopqrstuvwxyzxy").repeat(1) + (one_of(b"abcdefghijklmnopqrstuvwxyzxy")| number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
+        }
+        fn node_constructor_name<'a>() -> Parser<'a, u8, String> {
+            let lowercase = one_of(b"abcdefghijklmnopqrstuvwxyzxy");
+            let uppercase = one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+            let number = one_of(b"0123456789");
+            (uppercase.repeat(1) + (lowercase | number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
+        }
+
+        fn constructor_call<'a>() -> Parser<'a, u8, Expression> {
+            let parameters = (sym(b'(') * list(call(expression), sym(b',')) - sym(b')')).opt();
+
+            let r = node_constructor_name() + parameters;
+
+            r.map(|(constructor_name, parameters)| {
+                Expression::Term(Term::NodeConstructor(constructor_name, parameters))
+            })
+        }
+
         fn term<'a>() -> Parser<'a, u8, Expression> {
             let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
-            let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);            let number = sym(b'-').opt() + integer + frac.opt();
+            let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
+            let number = sym(b'-').opt() + integer + frac.opt();
             let number = number
                 .collect()
                 .map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<f32>().unwrap())
                 .map(|n| Expression::Term(Term::Number(n)));
-            let node_name = none_of(b",=+-*/ ()|").repeat(1..).convert(String::from_utf8) + (sym(b'|')*one_of(b"0123456789").repeat(1..).collect().map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<usize>().unwrap())).opt();
-            let node_name = node_name.map(|(node, c)| Expression::Term(Term::Node(node, c.unwrap_or(0))));
-            let term = number | node_name;
+            let port_number = one_of(b"0123456789").repeat(1..).collect().map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<usize>().unwrap());
+            let node_reference = (node_name() + (sym(b'|') * port_number).opt()).map(|(node, c)| Expression::Term(Term::Node(node, c.unwrap_or(0))));
+            let constructor = constructor_call();
+            let term = number | node_reference | constructor;
             term
         }
         fn grouped_expression<'a>() -> Parser<'a, u8, Expression> {
@@ -445,7 +480,8 @@ impl DynamicGraph {
         fn expression<'a>() -> Parser<'a, u8, Expression> {
             let operator = one_of(b"+-*/").repeat(1).collect().convert(str::from_utf8);
 
-            (call(grouped_expression) + operator + call(grouped_expression)).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term)
+            let r = (call(grouped_expression) + operator + call(grouped_expression)).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term);
+            r
         }
 
         fn number<'a>() -> Parser<'a, u8, f32> {
@@ -549,26 +585,27 @@ impl DynamicGraph {
             p.map(|(name, lines)| vec![Line::NodeDefinition(name, lines)])
         }
         fn node<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
-            let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
-            let exp = one_of(b"eE") + one_of(b"+-").opt() + one_of(b"0123456789").repeat(1..);
-            let number = sym(b'-').opt() + integer + frac.opt() + exp.opt();
-            let number = number
-                .collect()
-                .convert(str::from_utf8)
-                .convert(f32::from_str);
+            let node_name = none_of(b"\n=(),").repeat(1..).convert(String::from_utf8);
+            (node_name - sym(b'=') + expression() - sym(b'\n')).map(|(node_name, expression)| {
+                match expression {
+                    Expression::Term(Term::NodeConstructor(n,p)) => {
+                        let mut edges:Vec<_> = if let Some(p) = p {
+                            p.iter().enumerate().map(|(i,e)| {
+                                e.as_lines(node_name.clone(), i)
+                            }).flatten().collect()
+                        } else {
+                            vec![]
+                        };
 
-            let parameter = (sym(b'(') * list(expression(), sym(b',')) - sym(b')')).opt();
-            ((none_of(b"\n=(),")).repeat(1..).convert(String::from_utf8) - sym(b'=') + (none_of(b"[](),\n")).repeat(1..).convert(String::from_utf8) + parameter - sym(b'\n')).map(|((k, n), p)| {
-                let mut edges:Vec<_> = if let Some(p) = p {
-                    p.iter().enumerate().map(|(i,e)| {
-                        e.as_lines(k.clone(), i)
-                    }).flatten().collect()
-                } else {
-                    vec![]
-                };
-                edges.push(Line::Node(k, n, None));
-                edges
+                        edges.push(Line::Node(node_name, n, None));
+                        edges
+                    }
+                    _ => {
+                        let mut edges = expression.as_lines(node_name.clone(), 0);
+                        edges.push(Line::Node(node_name, "C".to_string(), None));
+                        edges
+                    }
+                }
             })
         }
         fn include<'a>() -> Parser<'a, u8, Vec<Line>> {
@@ -655,50 +692,50 @@ macro_rules! dynamic_node {
         });
     }
 }
-dynamic_node!("sine", __MODULE_sine, WaveTable::sine());
-dynamic_node!("psine", __MODULE_psine, WaveTable::positive_sine());
-dynamic_node!("saw", __MODULE_saw, WaveTable::saw());
-dynamic_node!("square", __MODULE_square, WaveTable::square());
-dynamic_node!("noise", __MODULE_noise, Pipe(Constant(f32x8::splat(440.0)), WaveTable::noise()));
-dynamic_node!("rnoise", __MODULE_rnoise, curry(Constant(f32x8::splat(440.0)), crate::instruments::RetriggeringWaveTable::new(WaveTable::noise())));
-dynamic_node!("ad", __MODULE_ad, InlineADEnvelope::default());
-dynamic_node!("asd", __MODULE_asd, InlineASDEnvelope::default());
-dynamic_node!("lpf", __MODULE_lpf, Biquad::lowpass());
-dynamic_node!("hpf", __MODULE_hpf, Biquad::highpass());
-dynamic_node!("bpf", __MODULE_bpf, Biquad::bandpass());
-dynamic_node!("eq", __MODULE_eq, Biquad::peaking_eq());
-dynamic_node!("sh", __MODULE_sh, SampleAndHold::default());
-dynamic_node!("ap", __MODULE_ap, AllPass::default());
-dynamic_node!("comb", __MODULE_comb, Comb::new(DelayLine::new(2)));
-dynamic_node!("pd", __MODULE_pd, PulseDivider::default());
-dynamic_node!("compressor", __MODULE_compressor, Compressor::default());
-dynamic_node!("limiter", __MODULE_limiter, Limiter::new(1.0));
-dynamic_node!("log", __MODULE_log, Log::<Value<(f32x8,)>>::default());
-dynamic_node!("stutter_reverb", __MODULE_stutter_reverb, Stutter::rand_pan(50, 0.35));
-dynamic_node!("soft_clip", __MODULE_soft_clip, SoftClip);
-dynamic_node!("looper", __MODULE_looper, Looper::default());
-dynamic_node!("turing_machine", __MODULE_turing_machine, crate::instruments::InlineSoftTuringMachine::default());
-dynamic_node!("smooth_leader", __MODULE_smooth_leader, crate::instruments::SmoothLeader::new());
-dynamic_node!("add", __MODULE_add, Add::<f32x8, f32x8>::default());
-dynamic_node!("sub", __MODULE_sub, Sub::<f32x8, f32x8>::default());
-dynamic_node!("mul", __MODULE_mul, Mul::<f32x8, f32x8>::default());
-dynamic_node!("div", __MODULE_div, Div::<f32x8, f32x8>::default());
-dynamic_node!("split", __MODULE_split, Split);
-dynamic_node!("rescale", __MODULE_rescale, ModulatedRescale);
-dynamic_node!("toggle", __MODULE_toggle, Toggle::default());
-dynamic_node!("imp", __MODULE_impulse, Impulse::default());
-dynamic_node!("pimp", __MODULE_pimpulse, ProbImpulse::default());
-dynamic_node!("aimp", __MODULE_aimpulse, AccumulatorImpulse::default());
-dynamic_node!("pow", __MODULE_pow, ToPower);
-dynamic_node!("reg", __MODULE_reg, Register::default());
-dynamic_node!("comp", __MODULE_comp, Comparator);
-dynamic_node!("svfl", __MODULE_svf_low, SimperSvf::low_pass());
-dynamic_node!("svfh", __MODULE_svf_high, SimperSvf::high_pass());
-dynamic_node!("svfb", __MODULE_svf_band, SimperSvf::band_pass());
-dynamic_node!("svfn", __MODULE_svf_notch, SimperSvf::notch());
-dynamic_node!("portamento", __MODULE_portamento, Portamento::default());
-dynamic_node!("reverb", __MODULE_reverb, Reverb::new());
-dynamic_node!("fold", __MODULE_folder, Folder);
-dynamic_node!("delay", __MODULE_modable_delay, ModableDelay::new());
-dynamic_node!("pulse_on_load", __MODULE_pulse_on_load, PulseOnLoad::default());
-dynamic_node!("c", __MODULE_identity, Identity);
+dynamic_node!("Sine", __MODULE_sine, WaveTable::sine());
+dynamic_node!("Psine", __MODULE_psine, WaveTable::positive_sine());
+dynamic_node!("Saw", __MODULE_saw, WaveTable::saw());
+dynamic_node!("Square", __MODULE_square, WaveTable::square());
+dynamic_node!("Noise", __MODULE_noise, Pipe(Constant(f32x8::splat(440.0)), WaveTable::noise()));
+dynamic_node!("Rnoise", __MODULE_rnoise, curry(Constant(f32x8::splat(440.0)), crate::instruments::RetriggeringWaveTable::new(WaveTable::noise())));
+dynamic_node!("Ad", __MODULE_ad, InlineADEnvelope::default());
+dynamic_node!("Asd", __MODULE_asd, InlineASDEnvelope::default());
+dynamic_node!("Lpf", __MODULE_lpf, Biquad::lowpass());
+dynamic_node!("Hpf", __MODULE_hpf, Biquad::highpass());
+dynamic_node!("Bpf", __MODULE_bpf, Biquad::bandpass());
+dynamic_node!("Eq", __MODULE_eq, Biquad::peaking_eq());
+dynamic_node!("Sh", __MODULE_sh, SampleAndHold::default());
+dynamic_node!("Ap", __MODULE_ap, AllPass::default());
+dynamic_node!("Comb", __MODULE_comb, Comb::new(DelayLine::new(2)));
+dynamic_node!("Pd", __MODULE_pd, PulseDivider::default());
+dynamic_node!("Compressor", __MODULE_compressor, Compressor::default());
+dynamic_node!("Limiter", __MODULE_limiter, Limiter::new(1.0));
+dynamic_node!("Log", __MODULE_log, Log::<Value<(f32x8,)>>::default());
+dynamic_node!("Stutter_reverb", __MODULE_stutter_reverb, Stutter::rand_pan(50, 0.35));
+dynamic_node!("Soft_clip", __MODULE_soft_clip, SoftClip);
+dynamic_node!("Looper", __MODULE_looper, Looper::default());
+dynamic_node!("Turing_machine", __MODULE_turing_machine, crate::instruments::InlineSoftTuringMachine::default());
+dynamic_node!("Smooth_leader", __MODULE_smooth_leader, crate::instruments::SmoothLeader::new());
+dynamic_node!("Add", __MODULE_add, Add::<f32x8, f32x8>::default());
+dynamic_node!("Sub", __MODULE_sub, Sub::<f32x8, f32x8>::default());
+dynamic_node!("Mul", __MODULE_mul, Mul::<f32x8, f32x8>::default());
+dynamic_node!("Div", __MODULE_div, Div::<f32x8, f32x8>::default());
+dynamic_node!("Split", __MODULE_split, Split);
+dynamic_node!("Rescale", __MODULE_rescale, ModulatedRescale);
+dynamic_node!("Toggle", __MODULE_toggle, Toggle::default());
+dynamic_node!("Imp", __MODULE_impulse, Impulse::default());
+dynamic_node!("Pimp", __MODULE_pimpulse, ProbImpulse::default());
+dynamic_node!("Aimp", __MODULE_aimpulse, AccumulatorImpulse::default());
+dynamic_node!("Pow", __MODULE_pow, ToPower);
+dynamic_node!("Reg", __MODULE_reg, Register::default());
+dynamic_node!("Comp", __MODULE_comp, Comparator);
+dynamic_node!("Svfl", __MODULE_svf_low, SimperSvf::low_pass());
+dynamic_node!("Svfh", __MODULE_svf_high, SimperSvf::high_pass());
+dynamic_node!("Svfb", __MODULE_svf_band, SimperSvf::band_pass());
+dynamic_node!("Svfn", __MODULE_svf_notch, SimperSvf::notch());
+dynamic_node!("Portamento", __MODULE_portamento, Portamento::default());
+dynamic_node!("Reverb", __MODULE_reverb, Reverb::new());
+dynamic_node!("Fold", __MODULE_folder, Folder);
+dynamic_node!("Delay", __MODULE_modable_delay, ModableDelay::new());
+dynamic_node!("Pulse_on_load", __MODULE_pulse_on_load, PulseOnLoad::default());
+dynamic_node!("C", __MODULE_identity, Identity);
