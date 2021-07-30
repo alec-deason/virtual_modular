@@ -3162,3 +3162,139 @@ impl Node for Identity {
         input
     }
 }
+
+const C0: f32 = 16.35;
+#[derive(Clone)]
+pub struct Quantizer {
+    values: Vec<f32>,
+}
+
+impl Quantizer {
+    pub fn new(values: &[f32]) -> Self {
+        Self {
+            values: values.to_vec()
+        }
+    }
+}
+
+impl Node for Quantizer {
+    type Input = Value<(f32,)>;
+    type Output = Value<(f32,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let freq = C0 * 2.0f32.powf(input.car().max(0.0));
+
+        let octave = input.car().floor().max(0.0);
+        let mut min_d = f32::INFINITY;
+        let mut min_freq = 0.0;
+        for v in &self.values {
+            let v = v * 2.0f32.powf(octave);
+            let d = (v - freq).abs();
+            if d < min_d {
+                min_d = d;
+                min_freq = v;
+            }
+        }
+        Value((min_freq,))
+    }
+}
+
+#[derive(Clone)]
+pub enum Subsequence {
+    Item(f32, f32),
+    Tuplet(Vec<Subsequence>, usize),
+    Iter(Vec<Subsequence>, usize),
+    Choice(Vec<Subsequence>, usize),
+}
+impl Subsequence {
+    fn current(&mut self, dt: f32) -> (f32, bool) {
+        match self {
+            Subsequence::Item(v, clock) => {
+                *clock += dt;
+                let do_tick = if *clock >= 1.0 {
+                    *clock = 0.0;
+                    true
+                } else {
+                    false
+                };
+                (*v, do_tick)
+            },
+            Subsequence::Tuplet(sub_sequence, sub_idx) => {
+                let dt = dt * sub_sequence.len() as f32;
+                let (v, do_tick) = sub_sequence[*sub_idx].current(dt);
+                let do_tick = if do_tick {
+                    *sub_idx += 1;
+                    if *sub_idx >= sub_sequence.len() {
+                        *sub_idx = 0;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                (v, do_tick)
+            }
+            Subsequence::Iter(sub_sequence, sub_idx) => {
+                let (v, do_tick) = sub_sequence[*sub_idx].current(dt);
+                let do_tick = if do_tick {
+                    *sub_idx += 1;
+                    if *sub_idx >= sub_sequence.len() {
+                        *sub_idx = 0;
+                    }
+                    true
+                } else {
+                    false
+                };
+                (v, do_tick)
+            }
+            Subsequence::Choice(sub_sequence, sub_idx) => {
+                let (v, do_tick) = sub_sequence[*sub_idx].current(dt);
+                let do_tick = if do_tick {
+                    *sub_idx = thread_rng().gen_range(0..sub_sequence.len());
+                    true
+                } else {
+                    false
+                };
+                (v, do_tick)
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Subsequence::Item(..) | Subsequence::Iter(..) | Subsequence::Choice(..) => 1,
+            Subsequence::Tuplet(sub_sequence, ..) => sub_sequence.len(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PatternSequencer {
+    sequence: Subsequence,
+    per_sample: f32,
+}
+
+impl PatternSequencer {
+    pub fn new(sequence: Subsequence) -> Self {
+        Self {
+            sequence,
+            per_sample: 0.0,
+        }
+    }
+}
+
+impl Node for PatternSequencer {
+    type Input = Value<(f32,)>;
+    type Output = Value<(f32,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((freq,)) = input;
+
+        Value((self.sequence.current((self.per_sample * freq)/self.sequence.len() as f32).0,))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 8.0/rate;
+    }
+}

@@ -447,7 +447,7 @@ impl DynamicGraph {
             let lowercase = one_of(b"abcdefghijklmnopqrstuvwxyzxy");
             let uppercase = one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ");
             let number = one_of(b"0123456789");
-            (uppercase.repeat(1) + (lowercase | number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
+            (uppercase.repeat(1) + (lowercase | one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ") | number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
         }
 
         fn constructor_call<'a>() -> Parser<'a, u8, Expression> {
@@ -535,22 +535,52 @@ impl DynamicGraph {
                 edges
             })
         }
-        fn sequencer<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let name = (none_of(b"\n=[](),")).repeat(1..).convert(String::from_utf8) - seq(b"=seq");
-            let r = name + sym(b'[') * list(number(), sym(b',')) - sym(b']');
-            let parameter = (sym(b'(') * list(expression(), sym(b',')) - sym(b')')).opt();
-            let r = r + parameter;
-            r.map(|((k, ns), p)| {
-                let n = Sequencer::new(ns);
-                let n = BoxedDynamicNode::new(n);
-                let mut edges:Vec<_> = if let Some(p) = p {
-                    p.iter().enumerate().map(|(i,e)| {
-                        e.as_lines(k.clone(), i)
-                    }).flatten().collect()
+        fn sub_sequence<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'[') * list(number().map(|n| Subsequence::Item(n, 0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b']')).convert(|s| {
+                if s.is_empty() {
+                    Err(())
+                } else if s.len() == 1 {
+                    Ok(s[0].clone())
                 } else {
-                    vec![]
-                };
-                edges.push(Line::Node(k, "sequencer".to_string(), Some(n)));
+                    Ok(Subsequence::Tuplet(s, 0))
+                }
+            })
+        }
+        fn choice_sequence<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'|') * list(number().map(|n| Subsequence::Item(n, 0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b'|')).convert(|s| {
+                if s.is_empty() {
+                    Err(())
+                } else if s.len() == 1 {
+                    Ok(s[0].clone())
+                } else {
+                    Ok(Subsequence::Choice(s, 0))
+                }
+            })
+        }
+        fn iter_sequence<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'<') * list(number().map(|n| Subsequence::Item(n, 0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b'>')).convert(|s| {
+                if s.is_empty() {
+                    Err(())
+                } else if s.len() == 1 {
+                    Ok(s[0].clone())
+                } else {
+                    Ok(Subsequence::Iter(s, 0))
+                }
+            })
+        }
+
+        fn sequencer<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let name = node_name() - seq(b"=seq");
+            let r = name + sub_sequence();
+            let parameter = sym(b'(') * expression() - sym(b')');
+            let r = r + parameter;
+            r.map(|((node_name, sub_sequence), clock)| {
+                let n = PatternSequencer::new(sub_sequence);
+                let n = BoxedDynamicNode::new(n);
+
+                let mut edges = Vec::with_capacity(3);
+                edges.extend(clock.as_lines(node_name.clone(), 0));
+                edges.push(Line::Node(node_name, "pattern_sequencer".to_string(), Some(n)));
                 edges
             })
         }
@@ -739,3 +769,4 @@ dynamic_node!("Fold", __MODULE_folder, Folder);
 dynamic_node!("Delay", __MODULE_modable_delay, ModableDelay::new());
 dynamic_node!("Pulse_on_load", __MODULE_pulse_on_load, PulseOnLoad::default());
 dynamic_node!("C", __MODULE_identity, Identity);
+dynamic_node!("ScaleMajor", __MODULE_scale_major, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]));
