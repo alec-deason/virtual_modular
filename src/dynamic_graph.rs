@@ -248,11 +248,18 @@ impl DynamicGraph {
             }
         }
         self.output = (f32x8::splat(0.0), f32x8::splat(0.0));
+        /*
         for (n,v) in &self.reset_edges {
             if let Some(node) = self.nodes.get_mut(n) {
                 node.0.set(*v, f32x8::splat(0.0));
             } else {
                 self.dynamic_nodes.get_mut(n).expect(&format!("no definition for {}",n)).input[*v] = f32x8::splat(0.0);
+            }
+        }
+        */
+        for (n,_) in self.nodes.values_mut() {
+            for i in 0..n.input_len() {
+                n.set(i, f32x8::splat(0.0));
             }
         }
 
@@ -509,7 +516,7 @@ impl DynamicGraph {
             let r = name + sym(b'[') * list(interpolation(), sym(b',')) - sym(b']');
             r.map(|(k, es)| {
                 let n = Automation::new(&es);
-                let n = BoxedDynamicNode::new(n);
+                let n = BoxedDynamicNode::new(Pipe(n, Splat));
                 vec![Line::Node(k, "automation".to_string(), Some(n))]
             })
         }
@@ -536,7 +543,7 @@ impl DynamicGraph {
             })
         }
         fn sub_sequence<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'[') * list(number().map(|n| Subsequence::Item(n, 0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b']')).convert(|s| {
+            (sym(b'[') * list(number().map(|n| Subsequence::Item(n, 0.0)) | sym(b'_').map(|_| Subsequence::Rest(0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b']')).convert(|s| {
                 if s.is_empty() {
                     Err(())
                 } else if s.len() == 1 {
@@ -547,7 +554,7 @@ impl DynamicGraph {
             })
         }
         fn choice_sequence<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'|') * list(number().map(|n| Subsequence::Item(n, 0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b'|')).convert(|s| {
+            (sym(b'|') * list(number().map(|n| Subsequence::Item(n, 0.0)) | sym(b'_').map(|_| Subsequence::Rest(0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b'|')).convert(|s| {
                 if s.is_empty() {
                     Err(())
                 } else if s.len() == 1 {
@@ -558,7 +565,7 @@ impl DynamicGraph {
             })
         }
         fn iter_sequence<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'<') * list(number().map(|n| Subsequence::Item(n, 0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b'>')).convert(|s| {
+            (sym(b'<') * list(number().map(|n| Subsequence::Item(n, 0.0)) | sym(b'_').map(|_| Subsequence::Rest(0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b'>')).convert(|s| {
                 if s.is_empty() {
                     Err(())
                 } else if s.len() == 1 {
@@ -576,7 +583,7 @@ impl DynamicGraph {
             let r = r + parameter;
             r.map(|((node_name, sub_sequence), clock)| {
                 let n = PatternSequencer::new(sub_sequence);
-                let n = BoxedDynamicNode::new(n);
+                let n = BoxedDynamicNode::new(Pipe(Pipe(Mean, n), Stack::new(Splat, Splat)));
 
                 let mut edges = Vec::with_capacity(3);
                 edges.extend(clock.as_lines(node_name.clone(), 0));
@@ -599,10 +606,10 @@ impl DynamicGraph {
             let n_in = seq(b"b{") * none_of(b",").repeat(1..).convert(String::from_utf8) - sym(b',');
             let n_out = none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}');
             (n_in+n_out).map(|(n_in,n_out)| {
-                let (a,b) = Bridge::<Value<(f32,)>>::new((0.0f32,));
+                let (a,b) = Bridge::<Value<(f32x8,)>>::new((f32x8::splat(0.0),));
                 vec![
                     Line::Node(n_in, "bridge_in".to_string(), Some(BoxedDynamicNode::new(a))),
-                    Line::Node(n_out, "bridge_out".to_string(), Some(BoxedDynamicNode::new(Pipe(b, Strip::<Value<((f32,),)>, Value<(f32,)>>::default())))),
+                    Line::Node(n_out, "bridge_out".to_string(), Some(BoxedDynamicNode::new(Pipe(b, Strip::<Value<((f32x8,),)>, Value<(f32x8,)>>::default())))),
                 ]
             })
         }
@@ -722,51 +729,33 @@ macro_rules! dynamic_node {
         });
     }
 }
-dynamic_node!("Sine", __MODULE_sine, WaveTable::sine());
-dynamic_node!("Psine", __MODULE_psine, WaveTable::positive_sine());
-dynamic_node!("Saw", __MODULE_saw, WaveTable::saw());
-dynamic_node!("Square", __MODULE_square, WaveTable::square());
-dynamic_node!("Noise", __MODULE_noise, Pipe(Constant(f32x8::splat(440.0)), WaveTable::noise()));
-dynamic_node!("Rnoise", __MODULE_rnoise, curry(Constant(f32x8::splat(440.0)), crate::instruments::RetriggeringWaveTable::new(WaveTable::noise())));
-dynamic_node!("Ad", __MODULE_ad, InlineADEnvelope::default());
-dynamic_node!("Asd", __MODULE_asd, InlineASDEnvelope::default());
-dynamic_node!("Lpf", __MODULE_lpf, Biquad::lowpass());
-dynamic_node!("Hpf", __MODULE_hpf, Biquad::highpass());
-dynamic_node!("Bpf", __MODULE_bpf, Biquad::bandpass());
-dynamic_node!("Eq", __MODULE_eq, Biquad::peaking_eq());
-dynamic_node!("Sh", __MODULE_sh, SampleAndHold::default());
-dynamic_node!("Ap", __MODULE_ap, AllPass::default());
-dynamic_node!("Comb", __MODULE_comb, Comb::new(DelayLine::new(2)));
-dynamic_node!("Pd", __MODULE_pd, PulseDivider::default());
-dynamic_node!("Compressor", __MODULE_compressor, Compressor::default());
-dynamic_node!("Limiter", __MODULE_limiter, Limiter::new(1.0));
-dynamic_node!("Log", __MODULE_log, Log::<Value<(f32x8,)>>::default());
-dynamic_node!("Stutter_reverb", __MODULE_stutter_reverb, Stutter::rand_pan(50, 0.35));
-dynamic_node!("Soft_clip", __MODULE_soft_clip, SoftClip);
-dynamic_node!("Looper", __MODULE_looper, Looper::default());
-dynamic_node!("Turing_machine", __MODULE_turing_machine, crate::instruments::InlineSoftTuringMachine::default());
-dynamic_node!("Smooth_leader", __MODULE_smooth_leader, crate::instruments::SmoothLeader::new());
 dynamic_node!("Add", __MODULE_add, Add::<f32x8, f32x8>::default());
 dynamic_node!("Sub", __MODULE_sub, Sub::<f32x8, f32x8>::default());
 dynamic_node!("Mul", __MODULE_mul, Mul::<f32x8, f32x8>::default());
 dynamic_node!("Div", __MODULE_div, Div::<f32x8, f32x8>::default());
-dynamic_node!("Split", __MODULE_split, Split);
-dynamic_node!("Rescale", __MODULE_rescale, ModulatedRescale);
-dynamic_node!("Toggle", __MODULE_toggle, Toggle::default());
 dynamic_node!("Imp", __MODULE_impulse, Impulse::default());
-dynamic_node!("Pimp", __MODULE_pimpulse, ProbImpulse::default());
-dynamic_node!("Aimp", __MODULE_aimpulse, AccumulatorImpulse::default());
-dynamic_node!("Pow", __MODULE_pow, ToPower);
-dynamic_node!("Reg", __MODULE_reg, Register::default());
 dynamic_node!("Comp", __MODULE_comp, Comparator);
+dynamic_node!("Sine", __MODULE_sine, WaveTable::sine());
+dynamic_node!("Psine", __MODULE_psine, WaveTable::positive_sine());
+dynamic_node!("Saw", __MODULE_saw, WaveTable::saw());
+dynamic_node!("Square", __MODULE_square, SquareWave::default());
+dynamic_node!("Noise", __MODULE_noise, Noise::default());
+dynamic_node!("Ad", __MODULE_ad, InlineADEnvelope::default());
+dynamic_node!("Adsr", __MODULE_asd, InlineADSREnvelope::default());
+dynamic_node!("Sh", __MODULE_sh, SampleAndHold::default());
+dynamic_node!("Pd", __MODULE_pd, PulseDivider::default());
+dynamic_node!("Log", __MODULE_log, Log::<Value<(f32x8,)>>::default());
+dynamic_node!("Rescale", __MODULE_rescale, ModulatedRescale);
 dynamic_node!("Svfl", __MODULE_svf_low, SimperSvf::low_pass());
 dynamic_node!("Svfh", __MODULE_svf_high, SimperSvf::high_pass());
 dynamic_node!("Svfb", __MODULE_svf_band, SimperSvf::band_pass());
 dynamic_node!("Svfn", __MODULE_svf_notch, SimperSvf::notch());
 dynamic_node!("Portamento", __MODULE_portamento, Portamento::default());
-dynamic_node!("Reverb", __MODULE_reverb, Reverb::new());
-dynamic_node!("Fold", __MODULE_folder, Folder);
+dynamic_node!("Reverb", __MODULE_reverb, Pipe(Stack::new(Max, Pass::<Value<(f32x8,f32x8)>>::default()), Reverb::new()));
 dynamic_node!("Delay", __MODULE_modable_delay, ModableDelay::new());
-dynamic_node!("Pulse_on_load", __MODULE_pulse_on_load, PulseOnLoad::default());
-dynamic_node!("C", __MODULE_identity, Identity);
-dynamic_node!("ScaleMajor", __MODULE_scale_major, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]));
+dynamic_node!("Bg", __MODULE_BernoulliGate, Pipe(Stack::new(Max, Pass::<Value<(f32x8,)>>::default()), BernoulliGate::default()));
+dynamic_node!("Invert", __MODULE_Invert, Invert);
+dynamic_node!("C", __MODULE_Identity, Identity);
+dynamic_node!("QuadSwitch", __MODULE_QuadSwitch, QuadIterSwitch::default());
+dynamic_node!("Max", __MODULE_Max, Pipe(Max, Splat));
+dynamic_node!("ScaleMajor", __MODULE_scale_major, Pipe(Pipe(Mean, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125])), Splat));

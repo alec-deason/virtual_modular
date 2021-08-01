@@ -451,6 +451,16 @@ impl Node for Max {
     }
 }
 #[derive(Clone)]
+pub struct Mean;
+impl Node for Mean {
+    type Input = Value<(f32x8,)>;
+    type Output = Value<(f32,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        Value((input.car().sum() / f32x8::lanes() as f32,))
+    }
+}
+#[derive(Clone)]
 pub struct One;
 impl Node for One {
     type Input = Value<(f32x8,)>;
@@ -596,6 +606,7 @@ where
 pub struct InlineADEnvelope {
     time: f32,
     triggered: bool,
+    current: f32,
     per_sample: f32
 }
 impl Node for InlineADEnvelope {
@@ -620,12 +631,16 @@ impl Node for InlineADEnvelope {
                 }
             }
             self.time += self.per_sample;
-            if self.time < attack {
-                r=r.replace(i, self.time/attack);
+            let v = if self.time < attack {
+                self.time/attack
             } else if self.time < attack+decay {
                 let t = (self.time - attack) / decay;
-                r=r.replace(i, 1.0-t);
-            }
+                1.0-t
+            } else {
+                0.0
+            };
+            self.current = self.current * 0.001 + v * 0.999;
+            r = r.replace(i, self.current);
         }
 
         Value((r,))
@@ -638,21 +653,24 @@ impl Node for InlineADEnvelope {
 
 
 #[derive(Copy,Clone,Default)]
-pub struct InlineASDEnvelope {
+pub struct InlineADSREnvelope {
     time: f32,
     triggered: bool,
+    current: f32,
     per_sample: f32
 }
-impl Node for InlineASDEnvelope {
-    type Input = Value<((f32x8, f32x8), f32x8,)>;
+impl Node for InlineADSREnvelope {
+    type Input = Value<((f32x8, f32x8), ((f32x8, f32x8), f32x8))>;
     type Output = Value<(f32x8,)>;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((attack, decay), gate)) = input;
+        let Value(((attack, decay), ((sustain, release), gate))) = input;
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let attack = attack.extract(i);
             let decay = decay.extract(i);
+            let release = release.extract(i);
+            let sustain = sustain.extract(i);
             let gate = gate.extract(i);
             if gate > 0.5 {
                 if !self.triggered {
@@ -667,14 +685,20 @@ impl Node for InlineASDEnvelope {
             }
             self.time += self.per_sample;
             if self.triggered {
-                if self.time < attack {
-                    r = r.replace(i, self.time/attack);
+                let target = if self.time < attack {
+                    self.time/attack
+                } else if self.time < attack+decay {
+                    let t = (self.time - attack) / decay;
+                    (1.0-t) + t*sustain
                 } else {
-                    r = r.replace(i, 1.0);
+                    sustain
+                };
+                self.current = self.current * 0.001 + target * 0.999;
+                r = r.replace(i, self.current);
+            } else {
+                if self.time < release {
+                    r=r.replace(i, (1.0 - self.time/release)*sustain);
                 }
-            } else if self.time < decay {
-                let t = self.time / decay;
-                r=r.replace(i, 1.0-t);
             }
         }
 
@@ -1661,16 +1685,16 @@ impl Node for Mix {
 pub struct PulseDivider(u32, bool);
 
 impl Node for PulseDivider {
-    type Input = Value<(f32, f32x8)>;
+    type Input = Value<(f32x8, f32x8)>;
     type Output = Value<(f32x8,)>;
 
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
         let Value((division, gate)) = input;
-        let division = division as u32;
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let gate = gate.extract(i);
+            let division = division.extract(i) as u32;
             if gate > 0.5 {
                 if !self.1 {
                     self.0 += 1;
@@ -2902,17 +2926,21 @@ impl Node for Register {
 #[derive(Copy, Clone, Default)]
 pub struct Comparator;
 impl Node for Comparator {
-    type Input = Value<(f32,f32)>;
-    type Output = Value<(f32,)>;
+    type Input = Value<(f32x8,f32x8)>;
+    type Output = Value<(f32x8,)>;
 
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
         let Value((a,b))=input;
-        if a > b {
-            Value((1.0,))
-        } else {
-            Value((0.0,))
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            if a.extract(i) > b.extract(i) {
+                r = r.replace(i, 1.0)
+            } else {
+                r = r.replace(i, 0.0)
+            }
         }
+        Value((r,))
     }
 }
 
@@ -3115,48 +3143,56 @@ impl Node for Reverb {
 pub struct ModableDelay {
     delay: Vec<f32>,
     idx: usize,
+    rate: f32,
 }
 impl ModableDelay {
     pub fn new() -> Self {
         Self {
             delay: vec![0.0; (0.09*44100.0) as usize],
             idx: 0,
+            rate: 0.0,
         }
     }
 }
 impl Node for ModableDelay {
-    type Input = Value<(f32,f32x8)>;
+    type Input = Value<(f32x8,f32x8)>;
     type Output = Value<(f32x8,)>;
 
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
         let Value((len,sig)) = input;
-        let len = len.max(0.001).min(1.0);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
+            let len = len.extract(i).max(0.001);
+            self.delay.resize((len*self.rate) as usize, 0.0);
             let sig = sig.extract(i);
             self.idx = (self.idx+1) % self.delay.len();
             self.delay[self.idx] = sig;
-            let mut line_end = self.idx as f32 - self.delay.len() as f32 * len;
+            let mut line_end = self.idx as f32 + 1.0;//- self.delay.len() as f32;
             while line_end < 0.0 {
                 line_end += self.delay.len() as f32;
             }
             line_end %= self.delay.len() as f32;
-            let t = line_end.fract();
-            let a = self.delay[line_end.floor() as usize];
-            let b = self.delay[line_end.ceil() as usize % self.delay.len()];
-            let v = a * (1.0-t) + b * t;
-            r = r.replace(i, v);
+            //let t = line_end.fract();
+            //let a = self.delay[line_end.floor() as usize];
+            //let b = self.delay[line_end.ceil() as usize % self.delay.len()];
+            //let v = a * (1.0-t) + b * t;
+            //r = r.replace(i, v);
+            r = r.replace(i, self.delay[line_end as usize]);
         }
         Value((r,))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.rate = rate;
     }
 }
 
 #[derive(Clone)]
 pub struct Identity;
 impl Node for Identity {
-    type Input = Value<(f32,)>;
-    type Output = Value<(f32,)>;
+    type Input = Value<(f32x8,)>;
+    type Output = Value<(f32x8,)>;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
         input
@@ -3202,14 +3238,15 @@ impl Node for Quantizer {
 #[derive(Clone)]
 pub enum Subsequence {
     Item(f32, f32),
+    Rest(f32),
     Tuplet(Vec<Subsequence>, usize),
     Iter(Vec<Subsequence>, usize),
     Choice(Vec<Subsequence>, usize),
 }
 impl Subsequence {
-    fn current(&mut self, dt: f32) -> (f32, bool) {
+    fn current(&mut self, dt: f32) -> (f32, bool, bool) {
         match self {
-            Subsequence::Item(v, clock) => {
+            Subsequence::Rest(clock) => {
                 *clock += dt;
                 let do_tick = if *clock >= 1.0 {
                     *clock = 0.0;
@@ -3217,11 +3254,21 @@ impl Subsequence {
                 } else {
                     false
                 };
-                (*v, do_tick)
+                (0.0, do_tick, false)
+            },
+            Subsequence::Item(v, clock) => {
+                *clock += dt;
+                let (do_tick, do_trigger) = if *clock >= 1.0 {
+                    *clock = 0.0;
+                    (true, true)
+                } else {
+                    (false, false)
+                };
+                (*v, do_tick, do_trigger)
             },
             Subsequence::Tuplet(sub_sequence, sub_idx) => {
                 let dt = dt * sub_sequence.len() as f32;
-                let (v, do_tick) = sub_sequence[*sub_idx].current(dt);
+                let (v, do_tick, do_trigger) = sub_sequence[*sub_idx].current(dt);
                 let do_tick = if do_tick {
                     *sub_idx += 1;
                     if *sub_idx >= sub_sequence.len() {
@@ -3233,10 +3280,10 @@ impl Subsequence {
                 } else {
                     false
                 };
-                (v, do_tick)
+                (v, do_tick, do_trigger)
             }
             Subsequence::Iter(sub_sequence, sub_idx) => {
-                let (v, do_tick) = sub_sequence[*sub_idx].current(dt);
+                let (v, do_tick, do_trigger) = sub_sequence[*sub_idx].current(dt);
                 let do_tick = if do_tick {
                     *sub_idx += 1;
                     if *sub_idx >= sub_sequence.len() {
@@ -3246,24 +3293,24 @@ impl Subsequence {
                 } else {
                     false
                 };
-                (v, do_tick)
+                (v, do_tick, do_trigger)
             }
             Subsequence::Choice(sub_sequence, sub_idx) => {
-                let (v, do_tick) = sub_sequence[*sub_idx].current(dt);
+                let (v, do_tick, do_trigger) = sub_sequence[*sub_idx].current(dt);
                 let do_tick = if do_tick {
                     *sub_idx = thread_rng().gen_range(0..sub_sequence.len());
                     true
                 } else {
                     false
                 };
-                (v, do_tick)
+                (v, do_tick, do_trigger)
             }
         }
     }
 
     fn len(&self) -> usize {
         match self {
-            Subsequence::Item(..) | Subsequence::Iter(..) | Subsequence::Choice(..) => 1,
+            Subsequence::Item(..) | Subsequence::Iter(..) | Subsequence::Choice(..) | Subsequence::Rest(..) => 1,
             Subsequence::Tuplet(sub_sequence, ..) => sub_sequence.len(),
         }
     }
@@ -3286,15 +3333,168 @@ impl PatternSequencer {
 
 impl Node for PatternSequencer {
     type Input = Value<(f32,)>;
-    type Output = Value<(f32,)>;
+    type Output = Value<(f32, f32)>;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
         let Value((freq,)) = input;
 
-        Value((self.sequence.current((self.per_sample * freq)/self.sequence.len() as f32).0,))
+        let (v,_,t) = self.sequence.current((self.per_sample * freq)/self.sequence.len() as f32);
+        Value((v, if t { 1.0 } else { 0.0 }))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 8.0/rate;
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct BernoulliGate {
+    trigger: bool,
+    active_gate: bool
+}
+
+impl Node for BernoulliGate {
+    type Input = Value<(f32, f32x8)>;
+    type Output = Value<(f32x8, f32x8)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((prob, sig)) = input;
+        let mut r = [f32x8::splat(0.0), f32x8::splat(0.0)];
+        for i in 0..f32x8::lanes() {
+            let sig = sig.extract(i);
+            if sig > 0.5 {
+                if !self.trigger {
+                    self.trigger = true;
+                    self.active_gate = thread_rng().gen::<f32>() < prob;
+                }
+            } else {
+                self.trigger = false;
+            }
+
+            if self.active_gate {
+                r[0] = r[0].replace(i, sig);
+            } else {
+                r[1] = r[1].replace(i, sig);
+            }
+        }
+        Value((r[0], r[1]))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Noise {
+    clock: f32,
+    value: f32,
+    per_sample: f32,
+}
+
+impl Node for Noise {
+    type Input = Value<(f32x8,)>;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((freq,)) = input;
+
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let period = 1.0/freq.extract(i);
+            self.clock += self.per_sample;
+            if self.clock >= period {
+                self.value = thread_rng().gen_range(-1.0..1.0);
+                self.clock = 0.0;
+            }
+            r = r.replace(i, self.value);
+        }
+
+        Value((r,))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate;
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct QuadIterSwitch {
+    triggered: bool,
+    idx: usize,
+}
+
+impl Node for QuadIterSwitch {
+    type Input = Value<(f32x8, f32x8)>;
+    type Output = Value<((f32x8, f32x8), (f32x8, f32x8))>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((trigger, sig)) = input;
+        let mut r = [
+            f32x8::splat(0.0),
+            f32x8::splat(0.0),
+            f32x8::splat(0.0),
+            f32x8::splat(0.0),
+        ];
+        for i in 0..f32x8::lanes() {
+            let trigger = trigger.extract(i);
+            let sig = sig.extract(i);
+            if trigger > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.idx = (self.idx + 1) % 4;
+                }
+            } else {
+                self.triggered = false;
+            }
+            r[self.idx] = r[self.idx].replace(i, sig);
+        }
+        Value(((r[0], r[1]), (r[2], r[3])))
+    }
+}
+
+fn poly_blep(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let t = t / dt;
+        2. * t - (t * t) - 1.
+
+    } else if t > (1.0 - dt) {
+        let t = (t - 1.0) / dt;
+        (t * t) + 2. * t + 1.
+
+    } else {
+        0.
+    }
+}
+
+#[derive(Clone)]
+pub struct SquareWave {
+    osc: hexodsp::dsp::helpers::PolyBlepOscillator,
+    per_sample: f32,
+}
+
+impl Default for SquareWave {
+    fn default() -> Self {
+        Self {
+            osc: hexodsp::dsp::helpers::PolyBlepOscillator::new(0.0),
+            per_sample: 0.0,
+        }
+    }
+}
+
+
+impl Node for SquareWave {
+    type Input = Value<(f32x8, f32x8)>;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((freq, pw)) = input;
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let freq = freq.extract(i);
+            let pw = pw.extract(i);
+            r = r.replace(i, self.osc.next_pulse(freq, self.per_sample, pw));
+        }
+        Value((r,))
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate;
     }
 }
