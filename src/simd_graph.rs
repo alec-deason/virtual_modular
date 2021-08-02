@@ -3036,7 +3036,13 @@ impl Node for SimperSvf {
 }
 
 #[derive(Copy, Clone, Default)]
-pub struct Portamento(f32,f32);
+pub struct Portamento {
+    current: f32,
+    target: f32,
+    remaining: u32,
+    delta: f32,
+    per_sample: f32
+}
 impl Node for Portamento {
     type Input = Value<(f32x8,f32x8)>;
     type Output = Value<(f32x8,)>;
@@ -3046,19 +3052,23 @@ impl Node for Portamento {
         let Value((transition_time,sig)) = input;
         let mut r = sig;
         for i in 0..f32x8::lanes() {
-            let transition_time = transition_time.extract(i);
             let sig = sig.extract(i);
-            if self.1 > 0.0 {
-                let m = transition_time;
-                let n = sig*m + self.0*(1.0-m);
-                r = r.replace(i, n);
-                self.0 = n;
+            if sig != self.target {
+                let transition_time = transition_time.extract(i);
+                self.remaining = (transition_time / self.per_sample) as u32;
+                self.delta = (sig-self.current) / self.remaining as f32;
+                self.target = sig;
+            }
+            if self.remaining > 0 {
+                self.current += self.delta;
+                self.remaining -= 1;
+                r = r.replace(i, self.current);
             }
         }
         Value((r,))
     }
     fn set_sample_rate(&mut self, rate: f32) {
-        self.1=1.0/rate;
+        self.per_sample = 1.0/rate;
     }
 }
 
@@ -3236,12 +3246,40 @@ impl Node for Quantizer {
 }
 
 #[derive(Clone)]
+pub struct DegreeQuantizer {
+    values: Vec<f32>,
+}
+
+impl DegreeQuantizer {
+    pub fn new(values: &[f32]) -> Self {
+        Self {
+            values: values.to_vec()
+        }
+    }
+}
+
+impl Node for DegreeQuantizer {
+    type Input = Value<(f32,)>;
+    type Output = Value<(f32,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let degree = (input.car() + self.values.len() as f32 * 4.0).max(0.0).round() as usize;
+
+        let octave = degree / self.values.len();
+        let idx = degree % self.values.len();
+
+        Value((self.values[idx]*2.0f32.powi(octave as i32),))
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum Subsequence {
     Item(f32, f32),
     Rest(f32),
     Tuplet(Vec<Subsequence>, usize),
     Iter(Vec<Subsequence>, usize),
     Choice(Vec<Subsequence>, usize),
+    ClockMultiplier(Box<Subsequence>, f32),
 }
 impl Subsequence {
     fn current(&mut self, dt: f32) -> (f32, bool, bool) {
@@ -3305,6 +3343,10 @@ impl Subsequence {
                 };
                 (v, do_tick, do_trigger)
             }
+            Subsequence::ClockMultiplier(sub_sequence, mul) => {
+                let dt = dt * *mul;
+                sub_sequence.current(dt)
+            }
         }
     }
 
@@ -3312,6 +3354,7 @@ impl Subsequence {
         match self {
             Subsequence::Item(..) | Subsequence::Iter(..) | Subsequence::Choice(..) | Subsequence::Rest(..) => 1,
             Subsequence::Tuplet(sub_sequence, ..) => sub_sequence.len(),
+            Subsequence::ClockMultiplier(sub_sequence, ..) => sub_sequence.len(),
         }
     }
 }

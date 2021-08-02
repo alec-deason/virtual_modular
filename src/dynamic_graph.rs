@@ -458,7 +458,7 @@ impl DynamicGraph {
         }
 
         fn constructor_call<'a>() -> Parser<'a, u8, Expression> {
-            let parameters = (sym(b'(') * list(call(expression), sym(b',')) - sym(b')')).opt();
+            let parameters = (sym(b'(') * whitespace() * list(call(expression), whitespace() * sym(b',') - whitespace()) - whitespace() - sym(b')')).opt();
 
             let r = node_constructor_name() + parameters;
 
@@ -487,7 +487,7 @@ impl DynamicGraph {
         fn expression<'a>() -> Parser<'a, u8, Expression> {
             let operator = one_of(b"+-*/").repeat(1).collect().convert(str::from_utf8);
 
-            let r = (call(grouped_expression) + operator + call(grouped_expression)).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term);
+            let r = (call(grouped_expression) - whitespace() + operator - whitespace() + call(grouped_expression)).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term);
             r
         }
 
@@ -542,43 +542,70 @@ impl DynamicGraph {
                 edges
             })
         }
-        fn sub_sequence<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'[') * list(number().map(|n| Subsequence::Item(n, 0.0)) | sym(b'_').map(|_| Subsequence::Rest(0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b']')).convert(|s| {
+
+        fn mn_modified_event<'a>() -> Parser<'a, u8, Subsequence> {
+            (call(mn_raw_event) + one_of(b"*/!") + number()).convert(|((e, o), n)| {
+                match o {
+                    b'*' => Ok(Subsequence::ClockMultiplier(Box::new(e),1.0/n)),
+                    b'/' => Ok(Subsequence::ClockMultiplier(Box::new(e),n)),
+                    b'!' => Ok(Subsequence::ClockMultiplier(Box::new(Subsequence::Tuplet((0..n.max(1.0) as usize).map(|_| e.clone()).collect(), 0)),1.0/n)),
+                    _ => Err(()),
+                }
+            })
+        }
+
+        fn mn_raw_event<'a>() -> Parser<'a, u8, Subsequence> {
+            call(mn_bracketed_pattern) | sym(b'~').map(|_| Subsequence::Rest(0.0)) | number().map(|n| Subsequence::Item(n, 0.0))
+        }
+
+        fn mn_event<'a>() -> Parser<'a, u8, Subsequence> {
+            call(mn_modified_event) | call(mn_raw_event)
+        }
+
+        fn mn_sequence<'a>() -> Parser<'a, u8, Vec<Subsequence>> {
+            list(call(mn_event), sym(b' '))
+        }
+
+        fn mn_repeat<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'[') * call(mn_sequence) - sym(b']'))
+            .convert(|s| {
                 if s.is_empty() {
                     Err(())
-                } else if s.len() == 1 {
-                    Ok(s[0].clone())
                 } else {
                     Ok(Subsequence::Tuplet(s, 0))
                 }
             })
         }
-        fn choice_sequence<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'|') * list(number().map(|n| Subsequence::Item(n, 0.0)) | sym(b'_').map(|_| Subsequence::Rest(0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b'|')).convert(|s| {
+
+        fn mn_cycle<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'<') * call(mn_sequence) - sym(b'>'))
+            .convert(|s| {
                 if s.is_empty() {
                     Err(())
-                } else if s.len() == 1 {
-                    Ok(s[0].clone())
-                } else {
-                    Ok(Subsequence::Choice(s, 0))
-                }
-            })
-        }
-        fn iter_sequence<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'<') * list(number().map(|n| Subsequence::Item(n, 0.0)) | sym(b'_').map(|_| Subsequence::Rest(0.0)) | call(choice_sequence) | call(iter_sequence) | call(sub_sequence), sym(b',')) - sym(b'>')).convert(|s| {
-                if s.is_empty() {
-                    Err(())
-                } else if s.len() == 1 {
-                    Ok(s[0].clone())
                 } else {
                     Ok(Subsequence::Iter(s, 0))
                 }
             })
         }
 
+        fn mn_choice<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'|') * call(mn_sequence) - sym(b'|'))
+            .convert(|s| {
+                if s.is_empty() {
+                    Err(())
+                } else {
+                    Ok(Subsequence::Choice(s, 0))
+                }
+            })
+        }
+
+        fn mn_bracketed_pattern<'a>() -> Parser<'a, u8, Subsequence> {
+            call(mn_repeat) | call(mn_cycle) | call(mn_choice)
+        }
+
         fn sequencer<'a>() -> Parser<'a, u8, Vec<Line>> {
             let name = node_name() - seq(b"=seq");
-            let r = name + sub_sequence();
+            let r = name + mn_bracketed_pattern();
             let parameter = sym(b'(') * expression() - sym(b')');
             let r = r + parameter;
             r.map(|((node_name, sub_sequence), clock)| {
@@ -623,7 +650,7 @@ impl DynamicGraph {
         }
         fn node<'a>() -> Parser<'a, u8, Vec<Line>> {
             let node_name = none_of(b"\n=(),").repeat(1..).convert(String::from_utf8);
-            (node_name - sym(b'=') + expression() - sym(b'\n')).map(|(node_name, expression)| {
+            (node_name - whitespace() - sym(b'=') - whitespace() + expression() - whitespace() - sym(b'\n')).map(|(node_name, expression)| {
                 match expression {
                     Expression::Term(Term::NodeConstructor(n,p)) => {
                         let mut edges:Vec<_> = if let Some(p) = p {
@@ -646,18 +673,21 @@ impl DynamicGraph {
             })
         }
         fn include<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let p = seq(b"include(") * none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b')') - sym(b'\n');
+            let p = seq(b"include(") * none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b')') - whitespace() - sym(b'\n');
             p.convert::<_, String, _>(|k| {
                 let data = std::fs::read_to_string(k.clone()).unwrap();
                 Ok(DynamicGraph::parse_inner(&data)?.into_iter().chain(vec![Line::Include(k)]).collect())
             })
         }
+        fn whitespace<'a>() -> Parser<'a, u8, Vec<u8>> {
+            sym(b' ').repeat(0..)
+        }
         fn edge<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let p = sym(b'(') *
-                none_of(b"),").repeat(1..).convert(String::from_utf8) - sym(b',') +
-                one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - sym(b',') +
+            let p = sym(b'(') * whitespace() *
+                none_of(b"),").repeat(1..).convert(String::from_utf8) - whitespace() - sym(b',') - whitespace() +
+                one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - whitespace() - sym(b',') - whitespace() +
                 expression()
-                - sym(b')') - sym(b'\n');
+                - whitespace() - sym(b')') - whitespace() - sym(b'\n');
             p.map(|((dst, i), e)| {
                 e.as_lines(dst, i as usize)
             })
@@ -750,6 +780,7 @@ dynamic_node!("Svfl", __MODULE_svf_low, SimperSvf::low_pass());
 dynamic_node!("Svfh", __MODULE_svf_high, SimperSvf::high_pass());
 dynamic_node!("Svfb", __MODULE_svf_band, SimperSvf::band_pass());
 dynamic_node!("Svfn", __MODULE_svf_notch, SimperSvf::notch());
+dynamic_node!("Looper", __MODULE_looper, Pipe(Stack::new(Stack::new(Mean,Mean),Pass::<Value<(f32x8,f32x8)>>::default()), Looper::default()));
 dynamic_node!("Portamento", __MODULE_portamento, Portamento::default());
 dynamic_node!("Reverb", __MODULE_reverb, Pipe(Stack::new(Max, Pass::<Value<(f32x8,f32x8)>>::default()), Reverb::new()));
 dynamic_node!("Delay", __MODULE_modable_delay, ModableDelay::new());
@@ -759,3 +790,4 @@ dynamic_node!("C", __MODULE_Identity, Identity);
 dynamic_node!("QuadSwitch", __MODULE_QuadSwitch, QuadIterSwitch::default());
 dynamic_node!("Max", __MODULE_Max, Pipe(Max, Splat));
 dynamic_node!("ScaleMajor", __MODULE_scale_major, Pipe(Pipe(Mean, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125])), Splat));
+dynamic_node!("ScaleDegreeMajor", __MODULE_scale_major_degree, Pipe(Pipe(Mean, DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125])), Splat));
