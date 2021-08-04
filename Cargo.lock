@@ -384,6 +384,7 @@ dependencies = [
  "pom",
  "portmidi",
  "rand",
+ "ringbuf",
  "uuid",
  "wmidi",
 ]

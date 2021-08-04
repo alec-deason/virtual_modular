@@ -22,6 +22,7 @@ uuid = { version="0.8.2", features=["v4"] }
 gilrs = "0.8.1"
 glam = "0.16.0"
 hexodsp = { git = "https://github.com/WeirdConstructor/HexoDSP.git" }
+ringbuf = "0.2.5"
 
 [dev-dependencies]
 cpal = "0.13"

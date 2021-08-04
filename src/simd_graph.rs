@@ -1767,6 +1767,7 @@ impl Node for Compressor {
 pub struct SidechainCompressor {
     threshold: f32,
     time: f32,
+    v: f32,
     decaying: bool,
     per_sample: f32,
 }
@@ -1775,6 +1776,7 @@ impl SidechainCompressor {
         Self {
             threshold,
             time: 0.0,
+            v: 0.0,
             decaying: false,
             per_sample: 0.0,
         }
@@ -1798,20 +1800,22 @@ impl Node for SidechainCompressor {
                     self.decaying = false;
                     self.time = 0.0;
                 }
-                let t = (self.time / 0.02).min(1.0);
-                let m = (1.0 - t) + t * 0.75;
-                l = l.replace(i, left * m);
-                r = r.replace(i, right * m);
+                let t = (self.time / 0.1).min(1.0);
+                let m = (1.0 - t) + t * 0.25;
+                self.v = self.v*0.99 + m*0.01;
+                l = l.replace(i, left * self.v);
+                r = r.replace(i, right * self.v);
                 self.time += self.per_sample;
             } else {
                 if !self.decaying {
                     self.decaying = true;
                     self.time = 0.0;
                 }
-                let t = (self.time / 0.02).min(1.0);
-                let m = (1.0 - t) * 0.75 + t;
-                l = l.replace(i, left * m);
-                r = r.replace(i, right * m);
+                let t = (self.time / 0.1).min(1.0);
+                let m = (1.0 - t) * 0.25 + t;
+                self.v = self.v*0.99 + m*0.01;
+                l = l.replace(i, left * self.v);
+                r = r.replace(i, right * self.v);
                 self.time += self.per_sample;
             }
         }
@@ -3103,31 +3107,34 @@ impl Reverb {
     }
 }
 impl Node for Reverb {
-    type Input = Value<(f32,(f32x8,f32x8))>;
+    type Input = Value<((f32, f32),(f32x8,f32x8))>;
     type Output = Value<(f32x8,f32x8)>;
 
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((len,(left,right))) = input;
+        let Value(((len,gain),(left,right))) = input;
         let mut r_l = f32x8::splat(0.0);
         let mut r_r = f32x8::splat(0.0);
         let Reverb {
             delay_l,
             delay_r,
-            allpass_l,
-            allpass_r,
             taps,
             tap_total,
             idx_l,
             idx_r,
             per_sample,
+            ..
         } = self;
-        let len = len.max(0.001).min(1.0);
+        let len = len.max(0.001);
+        delay_l.resize(((len / *per_sample)/8.0) as usize, f32x8::splat(0.0));
+        delay_r.resize((((len-0.0008).max(0.001) / *per_sample)/8.0) as usize, f32x8::splat(0.0));
+        *idx_l = (*idx_l+1) % delay_l.len();
+        *idx_r = (*idx_r+1) % delay_r.len();
         for (fti,g) in taps {
-            for (dl, idx, r) in [(&mut *delay_l, &mut *idx_l, &mut r_l), (delay_r, idx_r, &mut r_r)] {
-                let l = 1.0/(1.0+ *fti*len*dl.len() as f32 * *per_sample*8.0).powi(2);
-                let l = (l* *g)/ *tap_total;
-                let mut i = *idx as i32 - (*fti * dl.len() as f32) as i32;
+            for (dl, idx, r) in [(&mut *delay_l, *idx_l, &mut r_l), (delay_r, *idx_r, &mut r_r)] {
+                let l = 1.0/(1.0+ *fti*dl.len() as f32 * *per_sample*8.0).powi(2);
+                let l = (l* *g * gain)/ *tap_total;
+                let mut i = idx as i32 - (*fti * dl.len() as f32) as i32;
                 if i < 0 {
                     i += dl.len() as i32;
                 }
@@ -3135,13 +3142,11 @@ impl Node for Reverb {
                 *r += dl*l;
             }
         }
-        r_l = (self.delay_l[self.idx_l] + left - r_l) * 0.5;
-        r_r = (self.delay_r[self.idx_r] + right - r_r) * 0.5;
-        self.delay_l[self.idx_l] = (self.allpass_l.process(Value((f32x8::splat(1.0), self.delay_l[self.idx_l]))).0).0;
-        self.delay_r[self.idx_r] = (self.allpass_r.process(Value((f32x8::splat(1.0), self.delay_r[self.idx_r]))).0).0;
-        self.idx_l = (self.idx_l+1) % self.delay_l.len();
-        self.idx_r = (self.idx_r+1) % self.delay_r.len();
-        Value((r_l+left, r_r+right))
+        r_l = left - r_l;
+        r_r = right - r_r;
+        self.delay_l[self.idx_l] = (self.allpass_l.process(Value((f32x8::splat(1.0), r_l))).0).0;
+        self.delay_r[self.idx_r] = (self.allpass_r.process(Value((f32x8::splat(1.0), r_r))).0).0;
+        Value((r_l, r_r))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -3539,5 +3544,98 @@ impl Node for SquareWave {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 1.0/rate;
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct MidSideEncoder;
+
+impl Node for MidSideEncoder {
+    type Input = Value<(f32x8, f32x8)>;
+    type Output = Value<(f32x8, f32x8)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((l,r)) = input;
+        Value((l+r,l-r))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct MidSideDecoder;
+
+impl Node for MidSideDecoder {
+    type Input = Value<(f32x8, f32x8)>;
+    type Output = Value<(f32x8, f32x8)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((m,s)) = input;
+        Value((m+s,m-s))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Pan;
+
+impl Node for Pan {
+    type Input = Value<(f32x8, (f32x8, f32x8))>;
+    type Output = Value<(f32x8, f32x8)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value((pan, (l,r))) = input;
+        let pan_mapped = ((pan + 1.0) / 2.0) * (PI / 2.0);
+
+        Value((l*pan_mapped.sin(),r*pan_mapped.cos()))
+    }
+}
+
+#[derive(Clone)]
+pub struct Brownian {
+    current: f32,
+    triggered: bool,
+}
+
+impl Default for Brownian {
+    fn default() -> Self {
+        Self {
+            current: f32::NAN,
+            triggered: false,
+        }
+    }
+}
+
+impl Node for Brownian {
+    type Input = Value<((f32x8, f32x8), (f32x8, f32x8))>;
+    type Output = Value<(f32x8,)>;
+    #[inline]
+    fn process(&mut self, input: Self::Input) -> Self::Output {
+        let Value(((rate, min), (max, trig))) = input;
+
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let rate = rate.extract(i);
+            let min = min.extract(i);
+            let max = max.extract(i);
+            let trig = trig.extract(i);
+            if !self.current.is_finite() {
+                self.current = thread_rng().gen_range(min..max);
+            }
+            if trig > 0.5 {
+                if !self.triggered {
+                    self.current += thread_rng().gen_range(-1.0..1.0) * rate;
+                    self.triggered = true;
+                }
+            } else {
+                self.triggered = false;
+            }
+            if self.current > max {
+                self.current -= self.current - max;
+            }
+            if self.current < min {
+                self.current += min - self.current;
+            }
+            r = r.replace(i, self.current);
+        }
+        Value((r,))
+
     }
 }

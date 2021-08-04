@@ -262,6 +262,11 @@ impl DynamicGraph {
                 n.set(i, f32x8::splat(0.0));
             }
         }
+        for n in self.dynamic_nodes.values_mut() {
+            for i in 0..n.input.len() {
+                n.input[i] = f32x8::splat(0.0);
+            }
+        }
 
         for node in &self.topo_sort {
             if let Some(others) = self.edges.get(node) {
@@ -649,8 +654,7 @@ impl DynamicGraph {
             p.map(|(name, lines)| vec![Line::NodeDefinition(name, lines)])
         }
         fn node<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let node_name = none_of(b"\n=(),").repeat(1..).convert(String::from_utf8);
-            (node_name - whitespace() - sym(b'=') - whitespace() + expression() - whitespace() - sym(b'\n')).map(|(node_name, expression)| {
+            (node_name() - whitespace() - sym(b'=') - whitespace() + expression() - whitespace() - sym(b'\n')).map(|(node_name, expression)| {
                 match expression {
                     Expression::Term(Term::NodeConstructor(n,p)) => {
                         let mut edges:Vec<_> = if let Some(p) = p {
@@ -775,6 +779,9 @@ dynamic_node!("Adsr", __MODULE_asd, InlineADSREnvelope::default());
 dynamic_node!("Sh", __MODULE_sh, SampleAndHold::default());
 dynamic_node!("Pd", __MODULE_pd, PulseDivider::default());
 dynamic_node!("Log", __MODULE_log, Log::<Value<(f32x8,)>>::default());
+dynamic_node!("Pan", __MODULE_Pan, Pan);
+dynamic_node!("MidSideDecoder", __MODULE_MidSideDecoder, MidSideDecoder);
+dynamic_node!("MidSideEncoder", __MODULE_MidSideEncoder, MidSideEncoder);
 dynamic_node!("Rescale", __MODULE_rescale, ModulatedRescale);
 dynamic_node!("Svfl", __MODULE_svf_low, SimperSvf::low_pass());
 dynamic_node!("Svfh", __MODULE_svf_high, SimperSvf::high_pass());
@@ -782,12 +789,15 @@ dynamic_node!("Svfb", __MODULE_svf_band, SimperSvf::band_pass());
 dynamic_node!("Svfn", __MODULE_svf_notch, SimperSvf::notch());
 dynamic_node!("Looper", __MODULE_looper, Pipe(Stack::new(Stack::new(Mean,Mean),Pass::<Value<(f32x8,f32x8)>>::default()), Looper::default()));
 dynamic_node!("Portamento", __MODULE_portamento, Portamento::default());
-dynamic_node!("Reverb", __MODULE_reverb, Pipe(Stack::new(Max, Pass::<Value<(f32x8,f32x8)>>::default()), Reverb::new()));
+dynamic_node!("Reverb", __MODULE_reverb, Pipe(Stack::new(Stack::new(Max, Max), Pass::<Value<(f32x8,f32x8)>>::default()), Reverb::new()));
 dynamic_node!("Delay", __MODULE_modable_delay, ModableDelay::new());
 dynamic_node!("Bg", __MODULE_BernoulliGate, Pipe(Stack::new(Max, Pass::<Value<(f32x8,)>>::default()), BernoulliGate::default()));
 dynamic_node!("Invert", __MODULE_Invert, Invert);
 dynamic_node!("C", __MODULE_Identity, Identity);
 dynamic_node!("QuadSwitch", __MODULE_QuadSwitch, QuadIterSwitch::default());
 dynamic_node!("Max", __MODULE_Max, Pipe(Max, Splat));
+dynamic_node!("Folder", __MODULE_Folder, Folder);
+dynamic_node!("Brownian", __MODULE_Brownian, Brownian::default());
+dynamic_node!("Compressor", __MODULE_Compressor, SidechainCompressor::new(0.3));
 dynamic_node!("ScaleMajor", __MODULE_scale_major, Pipe(Pipe(Mean, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125])), Splat));
 dynamic_node!("ScaleDegreeMajor", __MODULE_scale_major_degree, Pipe(Pipe(Mean, DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125])), Splat));

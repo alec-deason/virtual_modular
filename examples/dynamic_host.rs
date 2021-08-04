@@ -1,7 +1,9 @@
+#![feature(exact_size_is_empty)]
 use std::{
     sync::Arc,
     convert::TryFrom
 };
+use ringbuf::{RingBuffer, Producer, Consumer};
 use portmidi as pm;
 use gilrs::{Gilrs, EventType, Event};
 
@@ -125,10 +127,32 @@ fn main() {
 
     let sample_rate = config.sample_rate().0 as f32;
     synth.set_sample_rate(sample_rate);
+
+    let rb = RingBuffer::<(f32,f32)>::new(4048);
+    let (mut prod, mut cons) = rb.split();
+
+    std::thread::spawn(move || {
+        let mut left = vec![0.0; 32];
+        let mut right = vec![0.0; 32];
+        loop {
+            synth.process(&mut left, &mut right);
+            let mut to_push = left.iter().zip(&right).map(|(l,r)| (*l,*r));
+            loop {
+                prod.push_iter(&mut to_push);
+                if to_push.is_empty() {
+                    break
+                } else {
+                    std::thread::sleep(std::time::Duration::from_secs_f32(10.0/44000.0));
+                }
+            }
+        }
+    });
+
+
     let cpal_stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => run::<f32>(&device, &config.into(), synth),
-        cpal::SampleFormat::I16 => run::<i16>(&device, &config.into(), synth),
-        cpal::SampleFormat::U16 => run::<u16>(&device, &config.into(), synth),
+        cpal::SampleFormat::F32 => run::<f32>(&device, &config.into(), cons),
+        cpal::SampleFormat::I16 => run::<i16>(&device, &config.into(), cons),
+        cpal::SampleFormat::U16 => run::<u16>(&device, &config.into(), cons),
     };
 
     let mut last_change = std::time::SystemTime::now();
@@ -159,7 +183,7 @@ fn main() {
 fn run<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    mut synth: InstrumentSynth,
+    mut ring_buffer: Consumer<(f32,f32)>,
 ) -> cpal::Stream
 where
     T: cpal::Sample,
@@ -168,14 +192,13 @@ where
 
     let err_fn = |err| eprintln!("an error occurred on stream: {}", err);
 
-    let mut outputs = vec![vec![0.0; 128]; 2];
 
 
     let stream = device
         .build_output_stream(
             config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                write_data(data, channels, &mut synth, &mut outputs)
+                write_data(data, channels, &mut ring_buffer)
             },
             err_fn,
         )
@@ -187,24 +210,17 @@ where
 fn write_data<T>(
     output: &mut [T],
     channels: usize,
-    synth: &mut InstrumentSynth,
-    outputs: &mut Vec<Vec<f32>>,
+    ring_buffer: &mut Consumer<(f32,f32)>,
 ) where
     T: cpal::Sample,
 {
-    outputs[0].resize(output.len() / 2, 0.0);
-    outputs[0].fill(0.0);
-    outputs[1].resize(output.len() / 2, 0.0);
-    outputs[1].fill(0.0);
-
-    let (left, tail) = outputs.split_at_mut(1);
-    synth.process(&mut left[0], &mut tail[0]);
-
+    let mut underran = false;
     for (i, frame) in output.chunks_mut(channels).enumerate() {
-        let value_left = outputs[0][i];
-        let value_right = outputs[1][i];
-
+        let (value_left, value_right) = ring_buffer.pop().unwrap_or_else(|| { underran=true; (0.0, 0.0) });
         frame[0] = cpal::Sample::from::<f32>(&(value_left * 0.5));
         frame[1] = cpal::Sample::from::<f32>(&(value_right * 0.5));
+    }
+    if underran {
+        println!("buffer underrun");
     }
 }
