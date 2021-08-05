@@ -23,6 +23,8 @@ gilrs = "0.8.1"
 glam = "0.16.0"
 hexodsp = { git = "https://github.com/WeirdConstructor/HexoDSP.git" }
 ringbuf = "0.2.5"
+typenum = "1.13.0"
+generic-array = "0.14.4"
 
 [dev-dependencies]
 cpal = "0.13"

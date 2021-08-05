@@ -10,185 +10,121 @@ use std::{
     convert::TryFrom,
     sync::{Arc, Mutex},
 };
+use generic_array::{ArrayLength, GenericArray, typenum::{U0, U1, U2, U3, U4, U5}, arr, sequence::{Concat, Split}};
 
-use crate::{
-    type_list::{Combine, NoValue, Value, ValueT, DynamicValue},
-};
+pub type Ports<N> = GenericArray<f32x8, N>;
 
 pub trait Node: DynClone {
-    type Input: ValueT;
-    type Output: ValueT;
-    fn process(&mut self, input: Self::Input) -> Self::Output;
+    type Input: ArrayLength<f32x8>;
+    type Output: ArrayLength<f32x8>;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output>;
     fn post_process(&mut self) {}
     fn set_sample_rate(&mut self, rate: f32) {}
 }
-dyn_clone::clone_trait_object!(<A, B> Node<Input=A, Output=B>);
+dyn_clone::clone_trait_object!(<A,B> Node<Input=A, Output=B>);
+
+
+#[derive(Copy, Clone)]
+pub struct Mul;
+impl Node for Mul {
+    type Input = U2;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; input[0] * input[1]]
+    }
+}
+#[derive(Copy, Clone)]
+pub struct Div;
+impl Node for Div {
+    type Input = U2;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; input[0] / input[1]]
+    }
+}
+#[derive(Copy, Clone)]
+pub struct Add;
+impl Node for Add {
+    type Input = U2;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; input[0] + input[1]]
+    }
+}
+#[derive(Copy, Clone)]
+pub struct Sub;
+impl Node for Sub {
+    type Input = U2;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; input[0] - input[1]]
+    }
+}
 
 #[derive(Clone)]
-pub struct LfoSine {
-    phase: f32,
-    per_sample: f32,
-    positive: bool,
-}
-impl Default for LfoSine {
-    fn default() -> Self {
-        Self {
-            phase: thread_rng().gen(),
-            per_sample: 0.0,
-            positive: false,
-        }
-    }
-}
-impl LfoSine {
-    pub fn new(phase: f32) -> Self {
-        Self {
-            phase,
-            per_sample: 0.0,
-            positive: false,
-        }
-    }
+pub struct Stereo;
+impl Node for Stereo {
+    type Input = U1;
+    type Output = U2;
 
-    pub fn positive_random_phase() -> Self {
-        Self {
-            phase: thread_rng().gen(),
-            per_sample: 0.0,
-            positive: true,
-        }
-    }
-
-    pub fn positive(phase: f32) -> Self {
-        Self {
-            phase,
-            per_sample: 0.0,
-            positive: true,
-        }
-    }
-}
-
-impl Node for LfoSine {
-    type Input = Value<(f32,)>;
-    type Output = Value<(f32x8,)>;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        self.phase = self.phase + self.per_sample * *input.car() * f32x8::lanes() as f32;
-        if self.phase > 500.0 {
-            self.phase %= 1.0;
-        }
-        let mut r = (self.phase * std::f32::consts::TAU).sin();
-        if self.positive {
-            r = (r + 1.0) / 2.0;
-        }
-        Value((f32x8::splat(r),))
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; input[0], input[0]]
+    }
+}
+
+#[derive(Clone)]
+pub struct Constant(pub f32);
+impl Node for Constant {
+    type Input = U0;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; f32x8::splat(self.0)]
+    }
+}
+
+#[derive(Clone)]
+pub struct Pipe<A: Clone, B: Clone>(pub A, pub B);
+impl<A: Clone, B: Clone> Node for Pipe<A, B>
+where
+    A: Node<Output = B::Input> + Clone,
+    B: Node + Clone,
+{
+    type Input = A::Input;
+    type Output = B::Output;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        self.1.process(self.0.process(input))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
-        self.per_sample = 1.0 / rate;
+        self.0.set_sample_rate(rate);
+        self.1.set_sample_rate(rate);
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct Mul<A, B>(PhantomData<A>, PhantomData<B>);
-impl<A, B> Default for Mul<A, B> {
-    fn default() -> Self {
-        Self(Default::default(), Default::default())
-    }
-}
-impl<A, B, C> Node for Mul<A, B>
-where
-    A: std::ops::Mul<B, Output = C> + Clone,
-    B: Clone,
-    C: Clone,
-{
-    type Input = Value<(A, B)>;
-    type Output = Value<(C,)>;
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        Value((input.car().clone() * input.cdr().clone(),))
-    }
-}
-#[derive(Copy, Clone)]
-pub struct Div<A, B>(PhantomData<A>, PhantomData<B>);
-impl<A, B> Default for Div<A, B> {
-    fn default() -> Self {
-        Self(Default::default(), Default::default())
-    }
-}
-impl<A, B, C> Node for Div<A, B>
-where
-    A: std::ops::Div<B, Output = C> + Copy,
-    B: Clone,
-    C: Clone,
-{
-    type Input = Value<(A, B)>;
-    type Output = Value<(C,)>;
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        Value((*input.car() / input.cdr().clone(),))
-    }
-}
-#[derive(Copy, Clone)]
-pub struct Add<A, B>(PhantomData<A>, PhantomData<B>);
-impl<A, B> Default for Add<A, B> {
-    fn default() -> Self {
-        Self(Default::default(), Default::default())
-    }
-}
-impl<A, B, C> Node for Add<A, B>
-where
-    A: std::ops::Add<B, Output = C> + Copy,
-    B: Clone,
-    C: Clone,
-{
-    type Input = Value<(A, B)>;
-    type Output = Value<(C,)>;
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        Value((*input.car() + input.cdr().clone(),))
-    }
-}
-#[derive(Copy, Clone)]
-pub struct Sub<A, B>(PhantomData<A>, PhantomData<B>);
-impl<A, B> Default for Sub<A, B> {
-    fn default() -> Self {
-        Self(Default::default(), Default::default())
-    }
-}
-impl<A, B, C> Node for Sub<A, B>
-where
-    A: std::ops::Sub<B, Output = C> + Copy,
-    B: Clone,
-    C: Clone,
-{
-    type Input = Value<(A, B)>;
-    type Output = Value<(C,)>;
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        Value((*input.car() - input.cdr().clone(),))
-    }
-}
 
 #[derive(Clone)]
-pub struct Branch<A: Clone, B: Clone, C: Clone>(A, B, PhantomData<C>);
-impl<A, B> Branch<A, B, (A::Output, B::Output)>
+pub struct Branch<A: Clone, B: Clone>(A, B);
+impl<A, B, C, D> Node for Branch<A, B>
 where
-    A: Node + Clone,
+    A: Node<Input = B::Input, Output = C> + Clone,
     B: Node + Clone,
-{
-    pub fn new(a: A, b: B) -> Self {
-        Self(a, b, Default::default())
-    }
-}
-impl<A, B, C> Node for Branch<A, B, C>
-where
-    A: Node + Clone,
-    B: Node<Input = A::Input> + Clone,
-    C: Combine<A::Output, B::Output> + Clone,
+    C: ArrayLength<f32x8> + std::ops::Add<B::Output, Output= D>,
+    D: ArrayLength<f32x8>
 {
     type Input = A::Input;
-    type Output = C::Output;
+    type Output = <A::Output as std::ops::Add<B::Output>>::Output;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        C::combine(self.0.process(input.clone()), self.1.process(input))
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let a = self.0.process(input.clone());
+        let b = self.1.process(input);
+        a.concat(b)
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -197,60 +133,64 @@ where
     }
 }
 #[derive(Clone)]
-pub struct Pass<A>(PhantomData<A>);
-impl<A> Default for Pass<A> {
+pub struct Pass<A: ArrayLength<f32x8>>(A);
+impl<A: ArrayLength<f32x8>> Default for Pass<A> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<A: ValueT> Node for Pass<A> {
+impl<A: ArrayLength<f32x8>> Node for Pass<A> {
     type Input = A;
     type Output = A;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         input
     }
 }
 #[derive(Clone)]
-pub struct Sink<A>(PhantomData<A>);
-impl<A> Default for Sink<A> {
+pub struct Sink<A: ArrayLength<f32x8>>(PhantomData<A>);
+impl<A: ArrayLength<f32x8>> Default for Sink<A> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<A: ValueT> Node for Sink<A> {
+impl<A: ArrayLength<f32x8>> Node for Sink<A> {
     type Input = A;
-    type Output = NoValue;
+    type Output = U0;
     #[inline]
-    fn process(&mut self, _input: Self::Input) -> Self::Output {
-        NoValue
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; ]
     }
 }
 
 #[derive(Clone)]
 pub struct Stack<A: Clone, B: Clone, C: Clone, D: Clone>(A, B, PhantomData<C>, PhantomData<D>);
-impl<A, B> Stack<A, B, (A::Input, B::Input), (A::Output, B::Output)>
+impl<A, B, C, D> Stack<A, B, C, D>
 where
     A: Node + Clone,
     B: Node + Clone,
+    C: Clone,
+    D: Clone,
 {
     pub fn new(a: A, b: B) -> Self {
         Self(a, b, Default::default(), Default::default())
     }
 }
-impl<A, B, C, D> Node for Stack<A, B, C, D>
+impl<A, B, C, D, E, F> Node for Stack<A, B, F, D>
 where
-    A: Node + Clone,
+    A: Node<Input= C, Output= E> + Clone,
     B: Node + Clone,
-    C: Combine<A::Input, B::Input> + Clone,
-    D: Combine<A::Output, B::Output> + Clone,
+    C: ArrayLength<f32x8> + std::ops::Add<B::Input, Output= D>,
+    D: ArrayLength<f32x8> + std::ops::Sub<C, Output=B::Input>,
+    E: ArrayLength<f32x8> + std::ops::Add<B::Output, Output= D>,
+    F: ArrayLength<f32x8>,
 {
-    type Input = C::Output;
-    type Output = D::Output;
+    type Input = <A::Input as std::ops::Add<B::Input>>::Output;
+    type Output = <A::Output as std::ops::Add<B::Output>>::Output;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let (a, b) = C::split(input);
-        D::combine(self.0.process(a), self.1.process(b))
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (a, b):(Ports<A::Input>, Ports<B::Input>) = Split::split(input);
+        self.0.process(a).concat(self.1.process(b))
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -259,17 +199,15 @@ where
     }
 }
 
+/*
 #[derive(Clone)]
-pub struct Curry<A, B, C, D, E>(A, B, PhantomData<C>, PhantomData<D>, PhantomData<E>);
-impl<A, B, C, D, E> Node for Curry<A, B, C, D, E>
+pub struct Curry<A, B>(A, B);
+impl<A, B> Node for Curry<A, B>
 where
-    A: Node + Clone,
-    B: Node<Input = C::Output> + Clone,
-    C: Combine<A::Output, E> + Clone,
-    D: Combine<A::Input, E> + Clone,
-    E: Clone,
+    A: Node<Output = U1> + Clone,
+    B: Node + Clone,
 {
-    type Input = D::Output;
+    type Input = <A::Input as std::ops::Add<generic_array::typenum::operator_aliases::Sub1<B::Input>>>::Output;
     type Output = B::Output;
     #[inline]
     fn process(&mut self, input: Self::Input) -> Self::Output {
@@ -340,28 +278,6 @@ pub fn curry3<A: Node, B: Node>(
 }
 
 #[derive(Clone)]
-pub struct Pipe<A: Clone, B: Clone>(pub A, pub B);
-impl<A: Clone, B: Clone> Node for Pipe<A, B>
-where
-    A: Node<Output = B::Input> + Clone,
-    B: Node + Clone,
-{
-    type Input = A::Input;
-    type Output = B::Output;
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        self.1.process(self.0.process(input))
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.0.set_sample_rate(rate);
-        self.1.set_sample_rate(rate);
-    }
-}
-pub fn pipe<I, O, A: Node<Input=I, Output=B::Input> + Clone, B: Node<Output=O> + Clone>(a: A, b: B) -> Pipe<A, B> {
-    Pipe(a, b)
-}
-#[derive(Clone)]
 pub struct Concat<A, B, C, D>(A, PhantomData<B>, PhantomData<C>, PhantomData<D>);
 impl<A, B, C, D> Concat<A, B, C, D> {
     pub fn new(a: A) -> Self {
@@ -393,16 +309,6 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct Constant<A>(pub A);
-impl<A: Clone> Node for Constant<A> {
-    type Input = NoValue;
-    type Output = Value<(A,)>;
-    #[inline]
-    fn process(&mut self, _input: Self::Input) -> Self::Output {
-        Value((self.0.clone(),))
-    }
-}
 
 #[derive(Clone,Default)]
 pub struct PulseOnLoad(bool);
@@ -450,6 +356,7 @@ impl Node for Max {
         Value((input.car().max_element(),))
     }
 }
+
 #[derive(Clone)]
 pub struct Mean;
 impl Node for Mean {
@@ -471,23 +378,24 @@ impl Node for One {
     }
 }
 
+*/
 #[derive(Clone)]
-pub struct ArcConstant<A>(pub Arc<RefCell<A>>);
-impl<A> ArcConstant<A> {
-    pub fn new(a: A) -> (Self, Arc<RefCell<A>>) {
+pub struct ArcConstant(pub Arc<RefCell<f32x8>>);
+impl ArcConstant {
+    pub fn new(a: f32x8) -> (Self, Arc<RefCell<f32x8>>) {
         let cell = Arc::new(RefCell::new(a));
         (Self(Arc::clone(&cell)), cell)
     }
 }
-impl<A: Clone> Node for ArcConstant<A> {
-    type Input = NoValue;
-    type Output = Value<(A,)>;
+impl Node for ArcConstant {
+    type Input = U0;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, _input: Self::Input) -> Self::Output {
-        Value((self.0.borrow().clone(),))
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; self.0.borrow().clone()]
     }
 }
-
+/*
 #[derive(Clone)]
 pub struct RawArcConstant<A:ValueT>(pub Arc<RefCell<A::Inner>>);
 impl<A:ValueT> RawArcConstant<A> {
@@ -504,24 +412,26 @@ impl<A: ValueT> Node for RawArcConstant<A> {
         A::from_inner(self.0.borrow().clone())
     }
 }
+*/
 
 #[derive(Clone)]
-pub struct Bridge<A: ValueT>(pub Arc<RefCell<A::Inner>>);
-impl<A: ValueT> Bridge<A> {
-    pub fn new(a: A::Inner) -> (Self, ArcConstant<A::Inner>) {
+pub struct Bridge(pub Arc<RefCell<f32x8>>);
+impl Bridge {
+    pub fn new(a: f32x8) -> (Self, ArcConstant) {
         let (constant, cell) = ArcConstant::new(a);
         (Self(cell), constant)
     }
 }
-impl<A: ValueT> Node for Bridge<A> {
-    type Input = A;
-    type Output = A;
+impl Node for Bridge {
+    type Input = U1;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        *self.0.borrow_mut() = input.inner().clone();
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        *self.0.borrow_mut() = input[0].clone();
         input
     }
 }
+/*
 
 #[derive(Clone)]
 pub struct RawBridge<A: ValueT>(pub Arc<RefCell<A::Inner>>);
@@ -601,6 +511,7 @@ where
         self.per_sample = 1.0 / rate;
     }
 }
+*/
 
 #[derive(Copy,Clone,Default)]
 pub struct InlineADEnvelope {
@@ -610,11 +521,11 @@ pub struct InlineADEnvelope {
     per_sample: f32
 }
 impl Node for InlineADEnvelope {
-    type Input = Value<((f32x8, f32x8), f32x8,)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U3;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((attack, decay), gate)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (attack, decay, gate) = (input[0], input[1], input[2]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let attack = attack.extract(i);
@@ -643,7 +554,7 @@ impl Node for InlineADEnvelope {
             r = r.replace(i, self.current);
         }
 
-        Value((r,))
+        arr![f32x8; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -660,11 +571,11 @@ pub struct InlineADSREnvelope {
     per_sample: f32
 }
 impl Node for InlineADSREnvelope {
-    type Input = Value<((f32x8, f32x8), ((f32x8, f32x8), f32x8))>;
-    type Output = Value<(f32x8,)>;
+    type Input = U5;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((attack, decay), ((sustain, release), gate))) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (attack, decay, sustain, release, gate) = (input[0], input[1], input[2], input[3], input[4]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let attack = attack.extract(i);
@@ -702,7 +613,7 @@ impl Node for InlineADSREnvelope {
             }
         }
 
-        Value((r,))
+        arr![f32x8; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -711,6 +622,7 @@ impl Node for InlineADSREnvelope {
 }
 
 
+/*
 #[derive(Clone)]
 pub struct Unison<A: Clone> {
     voices: Vec<(f32, f32, A)>,
@@ -766,6 +678,7 @@ where
     }
 }
 
+*/
 #[derive(Clone)]
 pub struct WaveTable {
     sample_rate: f32,
@@ -892,11 +805,12 @@ impl WaveTable {
 }
 
 impl Node for WaveTable {
-    type Input = Value<(f32x8,)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U1;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let input = input[0];
         let d = 1.0 / (self.sample_rate / self.len);
 
         let mut r = f32x8::splat(0.0);
@@ -905,27 +819,17 @@ impl Node for WaveTable {
                 self.idx -= self.len;
             }
             r = unsafe { r.replace_unchecked(i, self.table[self.idx as usize % self.table.len()]) };
-            self.idx += (input.0).0.extract(i) * d;
+            self.idx += input.extract(i) * d;
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate;
     }
 }
+/*
 
-#[derive(Clone)]
-pub struct Split;
-impl Node for Split {
-    type Input = Value<(f32x8,)>;
-    type Output = Value<(f32x8, f32x8)>;
-
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        Value((*input.car(), *input.car()))
-    }
-}
 
 #[derive(Clone, Default)]
 pub struct LowPass {
@@ -1262,19 +1166,21 @@ impl Node for ArcChoice {
         Value((r,))
     }
 }
+*/
 
 #[derive(Copy, Clone, Default)]
 pub struct SampleAndHold(f32, bool, bool);
 impl Node for SampleAndHold {
-    type Input = Value<(f32x8, f32x8)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U2;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (gate, signal) = (input[0], input[1]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
-            let gate = (input.0).0.extract(i);
-            let signal = (input.0).1.extract(i);
+            let gate = gate.extract(i);
+            let signal = signal.extract(i);
             if !self.1 && gate > 0.5 || !self.2 {
                 self.0 = signal;
                 self.1 = true;
@@ -1284,9 +1190,10 @@ impl Node for SampleAndHold {
             }
             r = unsafe { r.replace_unchecked(i, self.0) };
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 }
+
 
 #[derive(Copy, Clone)]
 pub struct Impulse(f32, bool);
@@ -1301,14 +1208,15 @@ impl Impulse {
     }
 }
 impl Node for Impulse {
-    type Input = Value<(f32x8,)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U1;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let input = input[0];
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
-            let gate = (input.0).0.extract(i);
+            let gate = input.extract(i);
             let mut switched = false;
             if !self.1 && gate > self.0 {
                 self.1 = true;
@@ -1320,10 +1228,10 @@ impl Node for Impulse {
                 r = unsafe { r.replace_unchecked(i, 1.0) };
             }
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 }
-
+/*
 #[derive(Copy, Clone)]
 pub struct SImpulse(f32, bool);
 impl Default for SImpulse {
@@ -1467,17 +1375,6 @@ impl Node for Accents {
         Value((r,))
     }
 }
-#[derive(Copy, Clone)]
-pub struct Invert;
-impl Node for Invert {
-    type Input = Value<(f32x8,)>;
-    type Output = Value<(f32x8,)>;
-
-    #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        Value((f32x8::splat(1.0) - *input.car(),))
-    }
-}
 
 #[derive(Clone)]
 pub struct GateSequencer(Arc<RefCell<Vec<bool>>>, usize, bool);
@@ -1594,18 +1491,18 @@ impl DelayLine<f32x8> {
         new_v
     }
 }
+*/
 
 #[derive(Copy, Clone, Default)]
 pub struct AllPass(f32, f32);
 
 impl Node for AllPass {
-    type Input = Value<(f32x8, f32x8)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U2;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let scale = *input.car();
-        let signal = *input.cdr();
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (scale, signal) = (input[0], input[1]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let scale = scale.extract(i);
@@ -1615,9 +1512,10 @@ impl Node for AllPass {
             self.1 = v;
             r = unsafe { r.replace_unchecked(i, v) };
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 }
+/*
 
 
 #[derive(Copy, Clone)]
@@ -1680,17 +1578,18 @@ impl Node for Mix {
         Value((la + lb, ra + rb))
     }
 }
+*/
 
 #[derive(Copy, Clone, Default)]
 pub struct PulseDivider(u32, bool);
 
 impl Node for PulseDivider {
-    type Input = Value<(f32x8, f32x8)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U2;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((division, gate)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (division, gate) = (input[0], input[1]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let gate = gate.extract(i);
@@ -1710,10 +1609,11 @@ impl Node for PulseDivider {
                 r = r.replace(i, gate);
             }
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 }
 
+/*
 #[derive(Clone,Default)]
 pub struct Compressor {
     time: f32,
@@ -1762,6 +1662,7 @@ impl Node for Compressor {
         self.per_sample = 1.0 / rate;
     }
 }
+*/
 
 #[derive(Clone)]
 pub struct SidechainCompressor {
@@ -1783,12 +1684,12 @@ impl SidechainCompressor {
     }
 }
 impl Node for SidechainCompressor {
-    type Input = Value<(f32x8, (f32x8, f32x8))>;
-    type Output = Value<(f32x8, f32x8)>;
+    type Input = U3;
+    type Output = U2;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((sidechain, (left, right))) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (sidechain, left, right) = (input[0], input[1], input[2]);
         let mut l = f32x8::splat(0.0);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
@@ -1819,13 +1720,14 @@ impl Node for SidechainCompressor {
                 self.time += self.per_sample;
             }
         }
-        Value((l, r))
+        arr![f32x8; l, r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 1.0 / rate;
     }
 }
+/*
 
 #[derive(Clone)]
 pub struct Limiter {
@@ -1910,24 +1812,21 @@ impl Node for HarmonicOscillator {
         self.per_sample = 1.0 / rate;
     }
 }
+*/
 
 #[derive(Copy, Clone)]
-pub struct Log<A>(PhantomData<A>);
-impl<A> Default for Log<A> {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
+pub struct Log;
 
-impl<A: ValueT + std::fmt::Debug> Node for Log<A> {
-    type Input = A;
-    type Output = A;
+impl Node for Log {
+    type Input = U1;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        println!("{:?}", input);
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        println!("{:?}", input[0]);
         input
     }
 }
+/*
 
 #[derive(Clone)]
 pub struct Nest<A>(PhantomData<A>);
@@ -2195,20 +2094,21 @@ impl Node for Rescale {
         Value((v,))
     }
 }
+*/
 #[derive(Copy, Clone)]
 pub struct ModulatedRescale;
 impl Node for ModulatedRescale {
-    type Input = Value<((f32x8, f32x8), f32x8,)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U3;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((min, max), mut v)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (min, max, mut v) = (input[0], input[1], input[2]);
         v *= max - min;
         v += min;
-        Value((v,))
+        arr![f32x8; v]
     }
 }
-
+/*
 #[derive(Copy, Clone)]
 pub struct FnRescale<F>(pub F);
 impl<F: Fn() -> (f32, f32) + Clone> Node for FnRescale<F> {
@@ -2329,16 +2229,17 @@ fn make_euclidian_rhythm(pulses: u32, len: u32, steps: &mut Vec<bool>) {
         }
     }
 }
+*/
 
 #[derive(Clone)]
 pub struct Folder;
 impl Node for Folder {
-    type Input = Value<(f32x8,)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U1;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((mut r,)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = input[0];
         for i in 0..f32x8::lanes() {
             let mut v = r.extract(i);
             while v.abs() > 1.0 {
@@ -2346,9 +2247,10 @@ impl Node for Folder {
             }
             r = r.replace(i, v);
         }
-        Value((r,))
+        arr![f32x8; r ]
     }
 }
+/*
 
 #[derive(Clone, Default)]
 pub struct Swing {
@@ -2648,6 +2550,7 @@ impl Node for StereoBoost {
         Value((left, right))
     }
 }
+*/
 
 #[derive(Copy, Clone)]
 pub struct SumSequencer([(u32, f32); 4], u32, bool);
@@ -2657,12 +2560,12 @@ impl SumSequencer {
     }
 }
 impl Node for SumSequencer {
-    type Input = Value<(f32x8,)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U1;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((gate,)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let gate = input[0];
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let gate = gate.extract(i);
@@ -2678,10 +2581,9 @@ impl Node for SumSequencer {
                 self.2 = false;
             }
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 }
-
 #[derive(Copy, Clone)]
 pub enum Interpolation {
     Constant { value: f32, duration: f32 },
@@ -2726,11 +2628,11 @@ impl Automation {
 }
 
 impl Node for Automation {
-    type Input = NoValue;
-    type Output = Value<(f32,)>;
+    type Input = U0;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let step = &self.steps[self.step];
         let (v, running) = step.evaluate(self.time);
         if !running {
@@ -2739,7 +2641,7 @@ impl Node for Automation {
         } else {
             self.time += self.per_sample;
         }
-        Value((v,))
+        arr![f32x8; f32x8::splat(v) ]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -2747,17 +2649,16 @@ impl Node for Automation {
     }
 }
 
-
 #[derive(Copy,Clone)]
 pub struct SoftClip;
 impl Node for SoftClip {
-    type Input = Value<(f32x8, f32x8)>;
-    type Output = Value<(f32x8,f32x8)>;
+    type Input = U2;
+    type Output = U2;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((l,r)) = input;
-        Value((l.tanh(), r.tanh()))
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (l,r) = (input[0], input[1]);
+        arr![f32x8; l.tanh(), r.tanh()]
     }
 }
 
@@ -2768,24 +2669,24 @@ pub struct Looper {
     idx: f32
 }
 impl Node for Looper {
-    type Input = Value<((f32, f32), (f32x8,f32x8))>;
-    type Output = Value<(f32x8,f32x8)>;
+    type Input = U4;
+    type Output = U2;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((gate, speed), signal)) = input;
-        if gate > 0.5 {
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (gate, speed, left, right) = (input[0], input[1], input[2], input[3]);
+        if gate.max_element() > 0.5 {
             if !self.triggered {
                 self.triggered = true;
                 self.samples.clear();
                 self.idx=0.0;
             }
-            self.samples.push(signal);
-            Value(signal)
+            self.samples.push((left, right));
+            arr![f32x8; left, right]
         } else {
             self.triggered = false;
             if !self.samples.is_empty() {
-                self.idx = self.idx + speed;
+                self.idx = self.idx + speed.max_element();
                 if self.idx.ceil() >= self.samples.len() as f32 {
                     self.idx -= self.samples.len() as f32;
                 } else if self.idx.floor() < 0.0 {
@@ -2794,14 +2695,14 @@ impl Node for Looper {
                 let f = f32x8::splat(self.idx.fract());
                 let a = self.samples[self.idx.floor() as usize];
                 let b = self.samples[self.idx.ceil() as usize % self.samples.len()];
-                Value(((a.0*(1.0-f) + b.0*f), (a.1*(1.0-f) + b.1*f)))
+                arr![f32x8; (a.0*(1.0-f) + b.0*f), (a.1*(1.0-f) + b.1*f)]
             } else {
-                Value((f32x8::splat(0.0),f32x8::splat(0.0)))
+                arr![f32x8; f32x8::splat(0.0), f32x8::splat(0.0)]
             }
         }
     }
 }
-
+/*
 #[derive(Clone, Default)]
 pub struct Toggle {
     value: bool,
@@ -2926,16 +2827,18 @@ impl Node for Register {
         self.1 = self.0;
     }
 }
+*/
 
 #[derive(Copy, Clone, Default)]
 pub struct Comparator;
 impl Node for Comparator {
-    type Input = Value<(f32x8,f32x8)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U2;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((a,b))=input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (a,b) = (input[0], input[1]);
+
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             if a.extract(i) > b.extract(i) {
@@ -2944,7 +2847,7 @@ impl Node for Comparator {
                 r = r.replace(i, 0.0)
             }
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 }
 
@@ -2979,12 +2882,12 @@ impl SimperSvf {
     }
 }
 impl Node for SimperSvf {
-    type Input = Value<((f32x8,f32x8), (f32x8, f32x8))>;
-    type Output = Value<(f32x8,)>;
+    type Input = U4;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((fc,res),(drive,sig)))=input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (fc, res, drive, sig) = (input[0], input[1], input[2], input[3]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let fc = fc.extract(i);
@@ -3032,7 +2935,7 @@ impl Node for SimperSvf {
         if !self.band.is_finite() {
             self.band = 0.0;
         }
-        Value((r,))
+        arr![f32x8; r]
     }
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate=rate;
@@ -3048,12 +2951,12 @@ pub struct Portamento {
     per_sample: f32
 }
 impl Node for Portamento {
-    type Input = Value<(f32x8,f32x8)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U2;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((transition_time,sig)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (transition_time,sig) = (input[0], input[1]);
         let mut r = sig;
         for i in 0..f32x8::lanes() {
             let sig = sig.extract(i);
@@ -3069,7 +2972,7 @@ impl Node for Portamento {
                 r = r.replace(i, self.current);
             }
         }
-        Value((r,))
+        arr![f32x8; r]
     }
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 1.0/rate;
@@ -3107,12 +3010,12 @@ impl Reverb {
     }
 }
 impl Node for Reverb {
-    type Input = Value<((f32, f32),(f32x8,f32x8))>;
-    type Output = Value<(f32x8,f32x8)>;
+    type Input = U4;
+    type Output = U2;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((len,gain),(left,right))) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (len,gain,left,right) = (input[0], input[1], input[2], input[3]);
         let mut r_l = f32x8::splat(0.0);
         let mut r_r = f32x8::splat(0.0);
         let Reverb {
@@ -3125,7 +3028,7 @@ impl Node for Reverb {
             per_sample,
             ..
         } = self;
-        let len = len.max(0.001);
+        let len = len.max_element().max(0.001);
         delay_l.resize(((len / *per_sample)/8.0) as usize, f32x8::splat(0.0));
         delay_r.resize((((len-0.0008).max(0.001) / *per_sample)/8.0) as usize, f32x8::splat(0.0));
         *idx_l = (*idx_l+1) % delay_l.len();
@@ -3144,9 +3047,9 @@ impl Node for Reverb {
         }
         r_l = left - r_l;
         r_r = right - r_r;
-        self.delay_l[self.idx_l] = (self.allpass_l.process(Value((f32x8::splat(1.0), r_l))).0).0;
-        self.delay_r[self.idx_r] = (self.allpass_r.process(Value((f32x8::splat(1.0), r_r))).0).0;
-        Value((r_l, r_r))
+        self.delay_l[self.idx_l] = self.allpass_l.process(arr![f32x8; f32x8::splat(1.0), r_l])[0];
+        self.delay_r[self.idx_r] = self.allpass_r.process(arr![f32x8; f32x8::splat(1.0), r_r])[0];
+        arr![f32x8; r_l, r_r ]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -3170,12 +3073,12 @@ impl ModableDelay {
     }
 }
 impl Node for ModableDelay {
-    type Input = Value<(f32x8,f32x8)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U2;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((len,sig)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (len,sig) = (input[0], input[1]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let len = len.extract(i).max(0.001);
@@ -3195,7 +3098,7 @@ impl Node for ModableDelay {
             //r = r.replace(i, v);
             r = r.replace(i, self.delay[line_end as usize]);
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -3206,10 +3109,10 @@ impl Node for ModableDelay {
 #[derive(Clone)]
 pub struct Identity;
 impl Node for Identity {
-    type Input = Value<(f32x8,)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U1;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         input
     }
 }
@@ -3229,13 +3132,14 @@ impl Quantizer {
 }
 
 impl Node for Quantizer {
-    type Input = Value<(f32,)>;
-    type Output = Value<(f32,)>;
+    type Input = U1;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let freq = C0 * 2.0f32.powf(input.car().max(0.0));
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let input = input[0].max_element().max(0.0);
+        let freq = C0 * 2.0f32.powf(input);
 
-        let octave = input.car().floor().max(0.0);
+        let octave = input.floor();
         let mut min_d = f32::INFINITY;
         let mut min_freq = 0.0;
         for v in &self.values {
@@ -3246,7 +3150,7 @@ impl Node for Quantizer {
                 min_freq = v;
             }
         }
-        Value((min_freq,))
+        arr![f32x8; f32x8::splat(min_freq)]
     }
 }
 
@@ -3264,16 +3168,17 @@ impl DegreeQuantizer {
 }
 
 impl Node for DegreeQuantizer {
-    type Input = Value<(f32,)>;
-    type Output = Value<(f32,)>;
+    type Input = U1;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let degree = (input.car() + self.values.len() as f32 * 4.0).max(0.0).round() as usize;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let input = input[0].max_element().max(0.0);
+        let degree = (input + self.values.len() as f32 * 4.0).max(0.0).round() as usize;
 
         let octave = degree / self.values.len();
         let idx = degree % self.values.len();
 
-        Value((self.values[idx]*2.0f32.powi(octave as i32),))
+        arr![f32x8; f32x8::splat(self.values[idx]*2.0f32.powi(octave as i32))]
     }
 }
 
@@ -3380,14 +3285,14 @@ impl PatternSequencer {
 }
 
 impl Node for PatternSequencer {
-    type Input = Value<(f32,)>;
-    type Output = Value<(f32, f32)>;
+    type Input = U1;
+    type Output = U2;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((freq,)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0].max_element();
 
         let (v,_,t) = self.sequence.current((self.per_sample * freq)/self.sequence.len() as f32);
-        Value((v, if t { 1.0 } else { 0.0 }))
+        arr![f32x8; f32x8::splat(v), f32x8::splat(if t { 1.0 } else { 0.0 })]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -3402,13 +3307,14 @@ pub struct BernoulliGate {
 }
 
 impl Node for BernoulliGate {
-    type Input = Value<(f32, f32x8)>;
-    type Output = Value<(f32x8, f32x8)>;
+    type Input = U2;
+    type Output = U2;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((prob, sig)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (prob, sig) = (input[0], input[1]);
         let mut r = [f32x8::splat(0.0), f32x8::splat(0.0)];
         for i in 0..f32x8::lanes() {
+            let prob = prob.extract(i);
             let sig = sig.extract(i);
             if sig > 0.5 {
                 if !self.trigger {
@@ -3425,7 +3331,7 @@ impl Node for BernoulliGate {
                 r[1] = r[1].replace(i, sig);
             }
         }
-        Value((r[0], r[1]))
+        arr![f32x8; r[0], r[1]]
     }
 }
 
@@ -3437,11 +3343,11 @@ pub struct Noise {
 }
 
 impl Node for Noise {
-    type Input = Value<(f32x8,)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U1;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((freq,)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0];
 
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
@@ -3454,7 +3360,7 @@ impl Node for Noise {
             r = r.replace(i, self.value);
         }
 
-        Value((r,))
+        arr![f32x8; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -3469,11 +3375,11 @@ pub struct QuadIterSwitch {
 }
 
 impl Node for QuadIterSwitch {
-    type Input = Value<(f32x8, f32x8)>;
-    type Output = Value<((f32x8, f32x8), (f32x8, f32x8))>;
+    type Input = U2;
+    type Output = U4;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((trigger, sig)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (trigger, sig) = (input[0], input[1]);
         let mut r = [
             f32x8::splat(0.0),
             f32x8::splat(0.0),
@@ -3493,21 +3399,7 @@ impl Node for QuadIterSwitch {
             }
             r[self.idx] = r[self.idx].replace(i, sig);
         }
-        Value(((r[0], r[1]), (r[2], r[3])))
-    }
-}
-
-fn poly_blep(t: f32, dt: f32) -> f32 {
-    if t < dt {
-        let t = t / dt;
-        2. * t - (t * t) - 1.
-
-    } else if t > (1.0 - dt) {
-        let t = (t - 1.0) / dt;
-        (t * t) + 2. * t + 1.
-
-    } else {
-        0.
+        arr![f32x8; r[0], r[1], r[2], r[3] ]
     }
 }
 
@@ -3528,18 +3420,18 @@ impl Default for SquareWave {
 
 
 impl Node for SquareWave {
-    type Input = Value<(f32x8, f32x8)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U2;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((freq, pw)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (freq, pw) = (input[0], input[1]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let freq = freq.extract(i);
             let pw = pw.extract(i);
             r = r.replace(i, self.osc.next_pulse(freq, self.per_sample, pw));
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -3551,12 +3443,12 @@ impl Node for SquareWave {
 pub struct MidSideEncoder;
 
 impl Node for MidSideEncoder {
-    type Input = Value<(f32x8, f32x8)>;
-    type Output = Value<(f32x8, f32x8)>;
+    type Input = U2;
+    type Output = U2;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((l,r)) = input;
-        Value((l+r,l-r))
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (l,r) = (input[0], input[1]);
+        arr![f32x8; l+r, l-r]
     }
 }
 
@@ -3564,12 +3456,12 @@ impl Node for MidSideEncoder {
 pub struct MidSideDecoder;
 
 impl Node for MidSideDecoder {
-    type Input = Value<(f32x8, f32x8)>;
-    type Output = Value<(f32x8, f32x8)>;
+    type Input = U2;
+    type Output = U2;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((m,s)) = input;
-        Value((m+s,m-s))
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (m, s) = (input[0], input[1]);
+        arr![f32x8; m+s,m-s]
     }
 }
 
@@ -3577,14 +3469,14 @@ impl Node for MidSideDecoder {
 pub struct Pan;
 
 impl Node for Pan {
-    type Input = Value<(f32x8, (f32x8, f32x8))>;
-    type Output = Value<(f32x8, f32x8)>;
+    type Input = U3;
+    type Output = U2;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((pan, (l,r))) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (pan, l, r) = (input[0], input[1], input[2]);
         let pan_mapped = ((pan + 1.0) / 2.0) * (PI / 2.0);
 
-        Value((l*pan_mapped.sin(),r*pan_mapped.cos()))
+        arr![f32x8; l*pan_mapped.sin(),r*pan_mapped.cos()]
     }
 }
 
@@ -3604,11 +3496,11 @@ impl Default for Brownian {
 }
 
 impl Node for Brownian {
-    type Input = Value<((f32x8, f32x8), (f32x8, f32x8))>;
-    type Output = Value<(f32x8,)>;
+    type Input = U4;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((rate, min), (max, trig))) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (rate, min, max, trig) = (input[0], input[1], input[2], input[3]);
 
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
@@ -3635,7 +3527,6 @@ impl Node for Brownian {
             }
             r = r.replace(i, self.current);
         }
-        Value((r,))
-
+        arr![f32x8; r]
     }
 }

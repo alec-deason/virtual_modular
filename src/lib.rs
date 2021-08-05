@@ -1,9 +1,9 @@
+#![feature(const_generics, const_evaluatable_checked)]
 #[macro_use] pub mod dynamic_graph;
-pub mod instruments;
 pub mod simd_graph;
-pub mod type_list;
+use simd_graph::Ports;
 use packed_simd_2::f32x8;
-use type_list::{NoValue, Value};
+use generic_array::{arr, typenum::{U0, U2}};
 
 use std::{
     cell::RefCell,
@@ -11,8 +11,8 @@ use std::{
 };
 
 pub struct InstrumentSynth {
-    synth: RefCell<Box<dyn simd_graph::Node<Input = NoValue, Output = Value<(f32x8, f32x8)>>>>,
-    synth_sample: (usize, (f32x8, f32x8)),
+    synth: RefCell<Box<dyn simd_graph::Node<Input=U0, Output=U2>>>,
+    synth_sample: (usize, Ports<U2>),
     float_parameters: HashMap<String, Box<dyn FnMut(f64)>>,
     float_float_parameters: HashMap<String, Box<dyn FnMut(f64, f64)>>,
     sample_rate: f32,
@@ -40,11 +40,11 @@ impl InstrumentSynthBuilder {
 
     pub fn build_with_synth(
         self,
-        synth: impl simd_graph::Node<Input = NoValue, Output = Value<(f32x8, f32x8)>> + 'static,
+        synth: impl simd_graph::Node<Input=U0, Output=U2> + 'static,
     ) -> InstrumentSynth {
         InstrumentSynth {
             synth: RefCell::new(Box::new(synth)),
-            synth_sample: (9, (f32x8::splat(0.0), f32x8::splat(0.0))),
+            synth_sample: (9, arr![f32x8; f32x8::splat(0.0), f32x8::splat(0.0)]),
             float_parameters: self.float_parameters,
             float_float_parameters: self.float_float_parameters,
             sample_rate: 4100.0,
@@ -70,7 +70,7 @@ impl InstrumentSynth {
     }
 
     pub fn replace_synth(&self,
-        mut synth: impl simd_graph::Node<Input = NoValue, Output = Value<(f32x8, f32x8)>> + 'static,
+        mut synth: impl simd_graph::Node<Input=U0, Output=U2> + 'static,
     ) {
         synth.set_sample_rate(self.sample_rate);
         let synth = Box::new(synth);
@@ -87,11 +87,11 @@ impl InstrumentSynth {
     pub fn process(&mut self, out_left: &mut [f32], out_right: &mut [f32]) {
         for (left, right) in out_left.iter_mut().zip(out_right) {
             if self.synth_sample.0 >= f32x8::lanes() {
-                self.synth_sample = (0, self.synth.borrow_mut().process(NoValue).0);
+                self.synth_sample = (0, self.synth.borrow_mut().process(arr![f32x8; ]));
             }
             let i = self.synth_sample.0;
-            *left = (self.synth_sample.1).0.extract(i);
-            *right = (self.synth_sample.1).1.extract(i);
+            *left = (self.synth_sample.1)[0].extract(i);
+            *right = (self.synth_sample.1)[1].extract(i);
             self.synth_sample.0 += 1;
         }
     }

@@ -7,7 +7,7 @@ use ringbuf::{RingBuffer, Producer, Consumer};
 use portmidi as pm;
 use gilrs::{Gilrs, EventType, Event};
 
-use ::instruments::{instruments::*, simd_graph::*, type_list::Value, InstrumentSynth, dynamic_graph::{DynamicGraph, BoxedDynamicNode}};
+use ::instruments::{simd_graph::*, InstrumentSynth, dynamic_graph::{DynamicGraph, BoxedDynamicNode}};
 use packed_simd_2::f32x8;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

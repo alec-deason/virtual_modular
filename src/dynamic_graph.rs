@@ -9,9 +9,9 @@ use linkme::distributed_slice;
 
 use packed_simd_2::f32x8;
 
+use generic_array::{ArrayLength, typenum::{ToInt, U0, U2}, arr};
 use crate::{
-    simd_graph::Node,
-    type_list::{DynamicValue, Value, NoValue},
+    simd_graph::{Node, Ports},
 };
 
 pub trait DynamicNode: DynClone {
@@ -26,7 +26,7 @@ pub trait DynamicNode: DynClone {
 }
 dyn_clone::clone_trait_object!(DynamicNode);
 
-impl<A: DynamicValue, B:DynamicValue, N: Node<Input=A, Output=B> + Clone> DynamicNode for (N, RefCell<A>, RefCell<B>) {
+impl<A: ArrayLength<f32x8> + ToInt<usize> + Clone, B: ArrayLength<f32x8> + ToInt<usize> + Clone, N: Node<Input=A, Output=B> + Clone> DynamicNode for (N, RefCell<Ports<A>>, RefCell<Ports<B>>) {
     fn process(&mut self) {
         *self.2.borrow_mut() = self.0.process(self.1.borrow().clone());
     }
@@ -36,23 +36,23 @@ impl<A: DynamicValue, B:DynamicValue, N: Node<Input=A, Output=B> + Clone> Dynami
     }
 
     fn input_len(&self) -> usize {
-        self.1.borrow().len()
+        A::to_int()
     }
 
     fn output_len(&self) -> usize {
-        self.2.borrow().len()
+        B::to_int()
     }
 
     fn get(&self, i:usize) -> f32x8 {
-        self.2.borrow().get(i)
+        self.2.borrow()[i]
     }
 
     fn set(&mut self, i:usize, v: f32x8) {
-        self.1.borrow_mut().set(i, v);
+        self.1.borrow_mut()[i] = v;
     }
 
     fn add(&mut self, i:usize, v: f32x8) {
-        self.1.borrow_mut().add(i, v);
+        self.1.borrow_mut()[i] += v;
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -112,7 +112,7 @@ impl Expression {
                     }
                     Term::Number(v) => {
                         let n = uuid::Uuid::new_v4().to_string();
-                        lines.push(Line::Node(n.clone(), "Constant".to_string(), Some(BoxedDynamicNode::new(Constant(f32x8::splat(*v))))));
+                        lines.push(Line::Node(n.clone(), "Constant".to_string(), Some(BoxedDynamicNode::new(Constant(*v)))));
                         lines.push(Line::Edge(n, 0, target_node, target_port as u32));
                     }
                 }
@@ -138,8 +138,8 @@ impl DynamicNode for (DynamicGraph, RefCell<[f32x8; 2]>) {
     fn process(&mut self) {
         let r = self.0.process();
         let mut o = self.1.borrow_mut();
-        o[0] = (r.0).0;
-        o[1] = (r.0).1;
+        o[0] = r[0];
+        o[1] = r[1];
     }
 
     fn post_process(&mut self) {
@@ -181,9 +181,9 @@ impl std::fmt::Debug for BoxedDynamicNode {
     }
 }
 impl BoxedDynamicNode {
-        pub fn new<A: DynamicValue + Default + 'static, B:DynamicValue + Default + 'static, N: Node<Input=A, Output=B> + Clone + 'static>(n: N) -> Self {
-        let a = A::default();
-        let b = B::default();
+        pub fn new<A: ArrayLength<f32x8> + ToInt<usize> + Clone + 'static, B: ArrayLength<f32x8> + ToInt<usize> + 'static, N: Node<Input=A, Output=B> + Clone + 'static>(n: N) -> Self {
+        let a = Ports::default();
+        let b = Ports::default();
         Self(Box::new((n, RefCell::new(a), RefCell::new(b))))
     }
 }
@@ -241,7 +241,7 @@ pub struct DynamicGraph {
 }
 
 impl DynamicGraph {
-    pub fn process(&mut self) -> Value<(f32x8, f32x8)> {
+    pub fn process(&mut self) -> Ports<U2> {
         if let Ok(ei) = self.external_inputs.lock() {
             for (k, v) in self.external_input_nodes.values_mut() {
                 *v = *ei.get(k).unwrap_or(&0.0);
@@ -298,10 +298,10 @@ impl DynamicGraph {
         for (node,_) in self.nodes.values_mut() {
             node.post_process();
         }
-        Value((self.output.0, self.output.1))
+        arr![f32x8; self.output.0, self.output.1]
     }
 
-    pub fn add_node<A: DynamicValue + Default + 'static, B:DynamicValue + Default + 'static, N: Node<Input=A, Output=B> + Clone + 'static>(&mut self, name: String, ty: String, n: N) {
+    pub fn add_node<A: ArrayLength<f32x8> + ToInt<usize> + 'static, B:ArrayLength<f32x8> + ToInt<usize> + 'static, N: Node<Input=A, Output=B> + Clone + 'static>(&mut self, name: String, ty: String, n: N) {
         self.add_boxed_node(name, ty, BoxedDynamicNode::new(n));
     }
     pub fn add_boxed_node(&mut self, name: String, ty: String, n: BoxedDynamicNode) {
@@ -521,7 +521,7 @@ impl DynamicGraph {
             let r = name + sym(b'[') * list(interpolation(), sym(b',')) - sym(b']');
             r.map(|(k, es)| {
                 let n = Automation::new(&es);
-                let n = BoxedDynamicNode::new(Pipe(n, Splat));
+                let n = BoxedDynamicNode::new(n);
                 vec![Line::Node(k, "automation".to_string(), Some(n))]
             })
         }
@@ -615,7 +615,7 @@ impl DynamicGraph {
             let r = r + parameter;
             r.map(|((node_name, sub_sequence), clock)| {
                 let n = PatternSequencer::new(sub_sequence);
-                let n = BoxedDynamicNode::new(Pipe(Pipe(Mean, n), Stack::new(Splat, Splat)));
+                let n = BoxedDynamicNode::new(n);
 
                 let mut edges = Vec::with_capacity(3);
                 edges.extend(clock.as_lines(node_name.clone(), 0));
@@ -638,10 +638,10 @@ impl DynamicGraph {
             let n_in = seq(b"b{") * none_of(b",").repeat(1..).convert(String::from_utf8) - sym(b',');
             let n_out = none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}');
             (n_in+n_out).map(|(n_in,n_out)| {
-                let (a,b) = Bridge::<Value<(f32x8,)>>::new((f32x8::splat(0.0),));
+                let (a,b) = Bridge::new(f32x8::splat(0.0));
                 vec![
                     Line::Node(n_in, "bridge_in".to_string(), Some(BoxedDynamicNode::new(a))),
-                    Line::Node(n_out, "bridge_out".to_string(), Some(BoxedDynamicNode::new(Pipe(b, Strip::<Value<((f32x8,),)>, Value<(f32x8,)>>::default())))),
+                    Line::Node(n_out, "bridge_out".to_string(), Some(BoxedDynamicNode::new(b))),
                 ]
             })
         }
@@ -710,10 +710,10 @@ pub enum Line {
 }
 
 impl Node for DynamicGraph {
-    type Input = NoValue;
-    type Output = Value<(f32x8, f32x8)>;
+    type Input = U0;
+    type Output = U2;
     #[inline]
-    fn process(&mut self, _input: Self::Input) -> Self::Output {
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut reparse_data = None;
         if let Ok(mut d) = self.reload_data.lock() {
             reparse_data = d.take();
@@ -763,10 +763,10 @@ macro_rules! dynamic_node {
         });
     }
 }
-dynamic_node!("Add", __MODULE_add, Add::<f32x8, f32x8>::default());
-dynamic_node!("Sub", __MODULE_sub, Sub::<f32x8, f32x8>::default());
-dynamic_node!("Mul", __MODULE_mul, Mul::<f32x8, f32x8>::default());
-dynamic_node!("Div", __MODULE_div, Div::<f32x8, f32x8>::default());
+dynamic_node!("Add", __MODULE_add, Add);
+dynamic_node!("Sub", __MODULE_sub, Sub);
+dynamic_node!("Mul", __MODULE_mul, Mul);
+dynamic_node!("Div", __MODULE_div, Div);
 dynamic_node!("Imp", __MODULE_impulse, Impulse::default());
 dynamic_node!("Comp", __MODULE_comp, Comparator);
 dynamic_node!("Sine", __MODULE_sine, WaveTable::sine());
@@ -778,7 +778,7 @@ dynamic_node!("Ad", __MODULE_ad, InlineADEnvelope::default());
 dynamic_node!("Adsr", __MODULE_asd, InlineADSREnvelope::default());
 dynamic_node!("Sh", __MODULE_sh, SampleAndHold::default());
 dynamic_node!("Pd", __MODULE_pd, PulseDivider::default());
-dynamic_node!("Log", __MODULE_log, Log::<Value<(f32x8,)>>::default());
+dynamic_node!("Log", __MODULE_log, Log);
 dynamic_node!("Pan", __MODULE_Pan, Pan);
 dynamic_node!("MidSideDecoder", __MODULE_MidSideDecoder, MidSideDecoder);
 dynamic_node!("MidSideEncoder", __MODULE_MidSideEncoder, MidSideEncoder);
@@ -787,17 +787,15 @@ dynamic_node!("Svfl", __MODULE_svf_low, SimperSvf::low_pass());
 dynamic_node!("Svfh", __MODULE_svf_high, SimperSvf::high_pass());
 dynamic_node!("Svfb", __MODULE_svf_band, SimperSvf::band_pass());
 dynamic_node!("Svfn", __MODULE_svf_notch, SimperSvf::notch());
-dynamic_node!("Looper", __MODULE_looper, Pipe(Stack::new(Stack::new(Mean,Mean),Pass::<Value<(f32x8,f32x8)>>::default()), Looper::default()));
+dynamic_node!("Looper", __MODULE_looper, Looper::default());
 dynamic_node!("Portamento", __MODULE_portamento, Portamento::default());
-dynamic_node!("Reverb", __MODULE_reverb, Pipe(Stack::new(Stack::new(Max, Max), Pass::<Value<(f32x8,f32x8)>>::default()), Reverb::new()));
+dynamic_node!("Reverb", __MODULE_reverb, Reverb::new());
 dynamic_node!("Delay", __MODULE_modable_delay, ModableDelay::new());
-dynamic_node!("Bg", __MODULE_BernoulliGate, Pipe(Stack::new(Max, Pass::<Value<(f32x8,)>>::default()), BernoulliGate::default()));
-dynamic_node!("Invert", __MODULE_Invert, Invert);
+dynamic_node!("Bg", __MODULE_BernoulliGate, BernoulliGate::default());
 dynamic_node!("C", __MODULE_Identity, Identity);
 dynamic_node!("QuadSwitch", __MODULE_QuadSwitch, QuadIterSwitch::default());
-dynamic_node!("Max", __MODULE_Max, Pipe(Max, Splat));
 dynamic_node!("Folder", __MODULE_Folder, Folder);
 dynamic_node!("Brownian", __MODULE_Brownian, Brownian::default());
 dynamic_node!("Compressor", __MODULE_Compressor, SidechainCompressor::new(0.3));
-dynamic_node!("ScaleMajor", __MODULE_scale_major, Pipe(Pipe(Mean, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125])), Splat));
-dynamic_node!("ScaleDegreeMajor", __MODULE_scale_major_degree, Pipe(Pipe(Mean, DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125])), Splat));
+dynamic_node!("ScaleMajor", __MODULE_scale_major, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]));
+dynamic_node!("ScaleDegreeMajor", __MODULE_scale_major_degree, DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]));
