@@ -112,7 +112,7 @@ impl Expression {
                     }
                     Term::Number(v) => {
                         let n = uuid::Uuid::new_v4().to_string();
-                        lines.push(Line::Node(n.clone(), "Constant".to_string(), Some(BoxedDynamicNode::new(Constant(*v)))));
+                        lines.push(Line::Node(n.clone(), "Constant".to_string(), Some(NodeParameters::Number(*v))));
                         lines.push(Line::Edge(n, 0, target_node, target_port as u32));
                     }
                 }
@@ -222,7 +222,7 @@ impl DynamicNode for BoxedDynamicNode {
 }
 
 #[distributed_slice]
-pub static MODULES: [(&'static str, fn() -> BoxedDynamicNode)] = [..];
+pub static MODULES: [(&'static str, fn() -> BoxedDynamicNode, &'static str)] = [..];
 
 #[derive(Clone, Default)]
 pub struct DynamicGraph {
@@ -347,7 +347,7 @@ impl DynamicGraph {
     }
 
     fn reparse(&mut self, l: &[Line]) -> Result<(), String> {
-        let module_constructors: HashMap<_,_> = MODULES.iter().enumerate().map(|(i, (n, _f))| (n.to_string(), i)).collect();
+        let module_constructors: HashMap<_,_> = MODULES.iter().enumerate().map(|(i, (n, _f, _c))| (n.to_string(), i)).collect();
         self.edges.clear();
         let mut nodes = HashMap::new();
         let mut definitions = HashMap::new();
@@ -356,8 +356,11 @@ impl DynamicGraph {
         for l in l {
             match l {
                 Line::Node(k, ty, _) => {
-                    let k = k.trim().to_string();
-                    nodes.insert(k, ty);
+                    nodes.insert(k, ty.clone());
+                }
+                Line::BridgeNode(in_node, out_node) => {
+                    nodes.insert(in_node, "bridge_in".to_string());
+                    nodes.insert(out_node, "bridge_out".to_string());
                 }
                 Line::NodeDefinition(k, l) => {
                     definitions.insert(k, l);
@@ -366,37 +369,71 @@ impl DynamicGraph {
                 _ => ()
             }
         }
-        self.nodes.retain(|k,v| nodes.get(k).map(|ty| &&v.1==ty).unwrap_or(false));
+        self.nodes.retain(|k,v| nodes.get(k).map(|ty| &v.1==ty).unwrap_or(false));
         self.external_input_nodes.clear();
         self.dynamic_nodes.retain(|k,v| nodes.contains_key(k));
         self.reset_edges.clear();
         for l in l {
             match l {
-                Line::Node(k, ty, o) => {
-                    let k = k.trim().to_string();
-                    if let Some(o) = o {
-                        let mut n = o.clone();
-                        n.set_sample_rate(self.sample_rate);
-                        self.add_boxed_node(k.clone(), ty.clone(), n);
-                    } else {
-                        if let Some(g) = self.dynamic_nodes.get_mut(&k) {
-                            g.reparse(definitions.get(ty).unwrap())?;
-                        } if !self.nodes.contains_key(&k) {
-                            if let Some(i) = module_constructors.get(ty) {
-                                let mut n = MODULES[*i].1();
-                                n.set_sample_rate(self.sample_rate);
-                                self.add_boxed_node(k.clone(), ty.clone(), n);
-                            } else if let Some(n) = definitions.get(ty) {
-                                let mut g = DynamicGraph::default();
-                                g.reparse(n)?;
-                                watch_list.extend(g.watch_list.lock().unwrap().iter().cloned());
-                                g.set_sample_rate(self.sample_rate);
-                                self.dynamic_nodes.insert(k.clone(), Box::new(g));
-                            } else {
-                                return Err(format!("No definition for {}", ty));
+                Line::Node(k, ty, parameters) => {
+                    if let Some(g) = self.dynamic_nodes.get_mut(k) {
+                        g.reparse(definitions.get(ty).unwrap())?;
+                    } if !self.nodes.contains_key(k) {
+                        match ty.as_str() {
+                            "sum_sequencer" => {
+                                if let Some(NodeParameters::SumSequence(parameters)) = parameters {
+                                    let n = SumSequencer::new(*parameters);
+                                    self.add_node(k.clone(), ty.clone(), n);
+                                } else {
+                                    panic!();
+                                }
+                            },
+                            "pattern_sequencer" => {
+                                if let Some(NodeParameters::PatternSequence(parameters)) = parameters {
+                                    let n = PatternSequencer::new(parameters.clone());
+                                    self.add_node(k.clone(), ty.clone(), n);
+                                } else {
+                                    panic!();
+                                }
+                            },
+                            "automation" => {
+                                if let Some(NodeParameters::AutomationSequence(parameters)) = parameters {
+                                    let n = Automation::new(parameters);
+                                    self.add_node(k.clone(), ty.clone(), n);
+                                } else {
+                                    panic!();
+                                }
+                            },
+                            "Constant" => {
+                                if let Some(NodeParameters::Number(parameters)) = parameters {
+                                    let n = Constant(*parameters);
+                                    self.add_node(k.clone(), ty.clone(), n);
+                                } else {
+                                    panic!();
+                                }
+                            },
+                            _ => {
+                                if let Some(i) = module_constructors.get(ty) {
+                                    let mut n = MODULES[*i].1();
+                                    n.set_sample_rate(self.sample_rate);
+                                    self.add_boxed_node(k.clone(), ty.clone(), n);
+                                } else if let Some(n) = definitions.get(ty) {
+                                    let mut g = DynamicGraph::default();
+                                    g.reparse(n)?;
+                                    watch_list.extend(g.watch_list.lock().unwrap().iter().cloned());
+                                    g.set_sample_rate(self.sample_rate);
+                                    self.dynamic_nodes.insert(k.clone(), Box::new(g));
+                                } else {
+                                    return Err(format!("No definition for {}", ty));
+                                }
                             }
                         }
                     }
+                }
+                Line::BridgeNode(in_node, out_node) => {
+                    let (a, b) = Bridge::new(f32x8::splat(0.0));
+                    self.add_node(in_node.clone(), "bridge_in".to_string(), a);
+                    self.add_node(out_node.clone(), "bridge_out".to_string(), b);
                 }
                 Line::ExternalParam(n, k) => {
                     self.external_input_nodes.insert(n.clone(),(k.clone(), 0.0));
@@ -520,9 +557,7 @@ impl DynamicGraph {
             let name = (none_of(b"\n=[](),")).repeat(1..).convert(String::from_utf8) - sym(b'=');
             let r = name + sym(b'[') * list(interpolation(), sym(b',')) - sym(b']');
             r.map(|(k, es)| {
-                let n = Automation::new(&es);
-                let n = BoxedDynamicNode::new(n);
-                vec![Line::Node(k, "automation".to_string(), Some(n))]
+                vec![Line::Node(k, "automation".to_string(), Some(NodeParameters::AutomationSequence(es)))]
             })
         }
 
@@ -534,8 +569,6 @@ impl DynamicGraph {
             r.map(|((k, ns), p)| {
                 let ns:Vec<_> = ns.into_iter().map(|(c,p)| (c as u32, p)).collect();
                 let ns:[(u32, f32); 4] = ns.try_into().unwrap();
-                let n = SumSequencer::new(ns);
-                let n = BoxedDynamicNode::new(n);
                 let mut edges:Vec<_> = if let Some(p) = p {
                     p.iter().enumerate().map(|(i,e)| {
                         e.as_lines(k.clone(), i)
@@ -543,7 +576,7 @@ impl DynamicGraph {
                 } else {
                     vec![]
                 };
-                edges.push(Line::Node(k, "sum_sequencer".to_string(), Some(n)));
+                edges.push(Line::Node(k, "sum_sequencer".to_string(), Some(NodeParameters::SumSequence(ns))));
                 edges
             })
         }
@@ -614,12 +647,9 @@ impl DynamicGraph {
             let parameter = sym(b'(') * expression() - sym(b')');
             let r = r + parameter;
             r.map(|((node_name, sub_sequence), clock)| {
-                let n = PatternSequencer::new(sub_sequence);
-                let n = BoxedDynamicNode::new(n);
-
                 let mut edges = Vec::with_capacity(3);
                 edges.extend(clock.as_lines(node_name.clone(), 0));
-                edges.push(Line::Node(node_name, "pattern_sequencer".to_string(), Some(n)));
+                edges.push(Line::Node(node_name, "pattern_sequencer".to_string(), Some(NodeParameters::PatternSequence(sub_sequence))));
                 edges
             })
         }
@@ -638,10 +668,8 @@ impl DynamicGraph {
             let n_in = seq(b"b{") * none_of(b",").repeat(1..).convert(String::from_utf8) - sym(b',');
             let n_out = none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}');
             (n_in+n_out).map(|(n_in,n_out)| {
-                let (a,b) = Bridge::new(f32x8::splat(0.0));
                 vec![
-                    Line::Node(n_in, "bridge_in".to_string(), Some(BoxedDynamicNode::new(a))),
-                    Line::Node(n_out, "bridge_out".to_string(), Some(BoxedDynamicNode::new(b))),
+                    Line::BridgeNode(n_in, n_out)
                 ]
             })
         }
@@ -699,10 +727,18 @@ impl DynamicGraph {
         synth().parse(data.as_bytes()).map_err(|e| format!("{:?}", e))
     }
 }
+#[derive(Clone, Debug)]
+pub enum NodeParameters {
+    PatternSequence(Subsequence),
+    Number(f32),
+    AutomationSequence(Vec<Interpolation>),
+    SumSequence([(u32, f32); 4]),
+}
 #[derive(Debug)]
 pub enum Line {
     ExternalParam(String, String),
-    Node(String, String, Option<BoxedDynamicNode>),
+    Node(String, String, Option<NodeParameters>),
+    BridgeNode(String, String),
     NodeDefinition(String, Vec<Line>),
     Edge(String, u32, String, u32),
     Include(String),
@@ -759,7 +795,7 @@ macro_rules! dynamic_node {
                 }
 
                 #[distributed_slice(MODULES)]
-                static $static_name: (&'static str, fn() -> BoxedDynamicNode) = ($name, fn_name);
+                static $static_name: (&'static str, fn() -> BoxedDynamicNode, &'static str) = ($name, fn_name, stringify!($constructor));
         });
     }
 }
@@ -772,6 +808,7 @@ dynamic_node!("Comp", __MODULE_comp, Comparator);
 dynamic_node!("Sine", __MODULE_sine, WaveTable::sine());
 dynamic_node!("Psine", __MODULE_psine, WaveTable::positive_sine());
 dynamic_node!("Saw", __MODULE_saw, WaveTable::saw());
+#[cfg(feature = "square")]
 dynamic_node!("Square", __MODULE_square, SquareWave::default());
 dynamic_node!("Noise", __MODULE_noise, Noise::default());
 dynamic_node!("Ad", __MODULE_ad, InlineADEnvelope::default());
@@ -797,5 +834,6 @@ dynamic_node!("QuadSwitch", __MODULE_QuadSwitch, QuadIterSwitch::default());
 dynamic_node!("Folder", __MODULE_Folder, Folder);
 dynamic_node!("Brownian", __MODULE_Brownian, Brownian::default());
 dynamic_node!("Compressor", __MODULE_Compressor, SidechainCompressor::new(0.3));
+dynamic_node!("MajorKeyMarkov", __MODULE_MajorKeyMarkov, Markov::major_key_chords());
 dynamic_node!("ScaleMajor", __MODULE_scale_major, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]));
 dynamic_node!("ScaleDegreeMajor", __MODULE_scale_major_degree, DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]));

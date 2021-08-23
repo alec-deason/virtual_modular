@@ -110,7 +110,7 @@ where
 
 
 #[derive(Clone)]
-pub struct Branch<A: Clone, B: Clone>(A, B);
+pub struct Branch<A: Clone, B: Clone>(pub A, pub B);
 impl<A, B, C, D> Node for Branch<A, B>
 where
     A: Node<Input = B::Input, Output = C> + Clone,
@@ -132,6 +132,7 @@ where
         self.1.set_sample_rate(rate);
     }
 }
+
 #[derive(Clone)]
 pub struct Pass<A: ArrayLength<f32x8>>(A);
 impl<A: ArrayLength<f32x8>> Default for Pass<A> {
@@ -2584,12 +2585,23 @@ impl Node for SumSequencer {
         arr![f32x8; r]
     }
 }
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Interpolation {
     Constant { value: f32, duration: f32 },
     Linear { start: f32, end: f32, duration: f32 },
 }
 impl Interpolation {
+    pub fn to_rust(&self) -> String {
+        match self {
+            Interpolation::Constant { value, duration } => {
+                format!("Interpolation::Constant {{ value: {:.4}, duration: {:.4} }}", value, duration)
+            }
+            Interpolation::Linear { start, end, duration } => {
+                format!("Interpolation::Linear {{ start: {:.4}, end: {:.4}, duration: {:.4} }}", start, end, duration)
+            }
+        }
+    }
+
     fn evaluate(&self, time: f32) -> (f32, bool) {
         match self {
             Interpolation::Linear { start, end, duration } => {
@@ -2601,7 +2613,7 @@ impl Interpolation {
                 }
             }
             Interpolation::Constant { value, duration } => {
-                (*value, time < *duration)
+                (*value, time <= *duration)
             }
         }
     }
@@ -2611,9 +2623,9 @@ impl Interpolation {
 pub struct Automation {
     steps: Vec<Interpolation>,
     step: usize,
-    time: f32,
+    time: f64,
     pub do_loop: bool,
-    per_sample: f32,
+    per_sample: f64,
 }
 impl Automation {
     pub fn new(steps: &[Interpolation]) -> Self {
@@ -2634,18 +2646,17 @@ impl Node for Automation {
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let step = &self.steps[self.step];
-        let (v, running) = step.evaluate(self.time);
+        let (v, running) = step.evaluate(self.time as f32);
         if !running {
             self.time = 0.0;
             self.step = (self.step + 1) % self.steps.len();
-        } else {
-            self.time += self.per_sample;
         }
+        self.time += self.per_sample;
         arr![f32x8; f32x8::splat(v) ]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
-        self.per_sample = f32x8::lanes() as f32 / rate;
+        self.per_sample = f32x8::lanes() as f64 / rate as f64;
     }
 }
 
@@ -3172,7 +3183,7 @@ impl Node for DegreeQuantizer {
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let input = input[0].max_element().max(0.0);
+        let input = input[0].max_element();
         let degree = (input + self.values.len() as f32 * 4.0).max(0.0).round() as usize;
 
         let octave = degree / self.values.len();
@@ -3192,6 +3203,28 @@ pub enum Subsequence {
     ClockMultiplier(Box<Subsequence>, f32),
 }
 impl Subsequence {
+    pub fn to_rust(&self) -> String {
+        match self {
+            Subsequence::Item(a, b) => format!("Subsequence::Item({:.4}, {:.4})",a, b),
+            Subsequence::Rest(a) => format!("Subsequence::Rest({:.4})",a),
+            Subsequence::Tuplet(seq, c) => {
+                let seq: Vec<_> = seq.iter().map(|s| s.to_rust()).collect();
+                format!("Subsequence::Tuplet(vec![{}], {})", seq.join(","), c)
+            }
+            Subsequence::Iter(seq, c) => {
+                let seq: Vec<_> = seq.iter().map(|s| s.to_rust()).collect();
+                format!("Subsequence::Iter(vec![{}], {})", seq.join(","), c)
+            }
+            Subsequence::Choice(seq, c) => {
+                let seq: Vec<_> = seq.iter().map(|s| s.to_rust()).collect();
+                format!("Subsequence::Choice(vec![{}], {})", seq.join(","), c)
+            }
+            Subsequence::ClockMultiplier(seq, m) => {
+                format!("Subsequence::ClockMultiplier(Box::new({}), {:.4})", seq.to_rust(), m)
+            }
+        }
+    }
+
     fn current(&mut self, dt: f32) -> (f32, bool, bool) {
         match self {
             Subsequence::Rest(clock) => {
@@ -3403,12 +3436,14 @@ impl Node for QuadIterSwitch {
     }
 }
 
+#[cfg(feature = "square")]
 #[derive(Clone)]
 pub struct SquareWave {
     osc: hexodsp::dsp::helpers::PolyBlepOscillator,
     per_sample: f32,
 }
 
+#[cfg(feature = "square")]
 impl Default for SquareWave {
     fn default() -> Self {
         Self {
@@ -3419,6 +3454,7 @@ impl Default for SquareWave {
 }
 
 
+#[cfg(feature = "square")]
 impl Node for SquareWave {
     type Input = U2;
     type Output = U1;
@@ -3526,6 +3562,81 @@ impl Node for Brownian {
                 self.current += min - self.current;
             }
             r = r.replace(i, self.current);
+        }
+        arr![f32x8; r]
+    }
+}
+
+#[derive(Clone)]
+pub struct IndexPort<A: ArrayLength<f32x8>>(usize, PhantomData<A>);
+impl<A: ArrayLength<f32x8>> IndexPort<A> {
+    pub fn new(port: usize) -> Self {
+        IndexPort(port, Default::default())
+    }
+}
+
+impl<A: ArrayLength<f32x8>> Node for IndexPort<A> {
+    type Input = A;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        arr![f32x8; input[self.0]]
+    }
+}
+
+#[derive(Clone)]
+pub struct Markov {
+    transitions: Vec<(f32,Vec<(usize,f32)>)>,
+    current_state: usize,
+    trigger: bool,
+}
+
+impl Markov {
+    pub fn new(transitions: &[(f32, Vec<(usize, f32)>)]) -> Self {
+        Self {
+            transitions: transitions.iter().cloned().collect(),
+            current_state: 0,
+            trigger: false,
+        }
+    }
+
+    pub fn major_key_chords() -> Self {
+        let transitions = vec![
+            (3.0, vec![(1, 1.0)]),
+            (6.0, vec![(2, 0.5), (3, 0.5)]),
+            (4.0, vec![(4, 0.5), (3, 0.5)]),
+            (2.0, vec![(4, 0.5), (5, 0.5)]),
+            (7.0, vec![(6, 0.5), (5, 0.5)]),
+            (5.0, vec![(6, 1.0)]),
+            (1.0, vec![(0, 1.0/7.0),(1, 1.0/7.0),(2, 1.0/7.0),(3, 1.0/7.0),(4, 1.0/7.0),(5, 1.0/7.0),(6, 1.0/7.0),]),
+        ];
+        Self {
+            transitions,
+            current_state: 0,
+            trigger: false,
+        }
+    }
+}
+
+impl Node for Markov {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            if input[0].extract(i) > 0.5 {
+                if !self.trigger {
+                    self.trigger = true;
+                    let transitions = &self.transitions[self.current_state].1;
+                    let mut rng = thread_rng();
+                    let new_state = transitions.choose_weighted(&mut rng, |(_, w)| *w).unwrap().0;
+                    self.current_state = new_state;
+                }
+            } else {
+                self.trigger = false;
+            }
+            r = r.replace(i, self.transitions[self.current_state].0);
         }
         arr![f32x8; r]
     }

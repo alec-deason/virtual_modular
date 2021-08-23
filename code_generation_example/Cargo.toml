@@ -1,0 +1,17 @@
+[package]
+name = "code_generation_example"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+instruments = { path = ".." }
+hexodsp = { git = "https://github.com/WeirdConstructor/HexoDSP.git", rev = "360adc10be7dfaf582300c20582f83e214e32c33" }
+generic-array = "0.14.4"
+packed_simd_2 = "0.3.5"
+cpal = "0.13.3"
+
+[build-dependencies]
+instruments = { path = ".." }
+hexodsp = { git = "https://github.com/WeirdConstructor/HexoDSP.git", rev = "360adc10be7dfaf582300c20582f83e214e32c33" }
