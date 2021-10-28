@@ -127,6 +127,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "code_generation_macro"
+version = "0.1.0"
+dependencies = [
+ "instruments",
+ "syn",
+]
+
+[[package]]
 name = "combine"
 version = "4.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -336,9 +344,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b919933a397b79c37e33b77bb2aa3dc8eb6e165ad809e58ff75bc7db2e34574"
 
 [[package]]
+name = "hashbrown"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab5ef0d4909ef3724cc8cce6ccc8572c5c817592e9285f5464f8e86f8bd3726e"
+
+[[package]]
 name = "hexodsp"
 version = "0.1.0"
-source = "git+https://github.com/WeirdConstructor/HexoDSP.git#360adc10be7dfaf582300c20582f83e214e32c33"
+source = "git+https://github.com/WeirdConstructor/HexoDSP.git?rev=360adc10be7dfaf582300c20582f83e214e32c33#360adc10be7dfaf582300c20582f83e214e32c33"
 dependencies = [
  "hound",
  "lazy_static",
@@ -359,6 +373,16 @@ name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
+
+[[package]]
+name = "indexmap"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc633605454125dec4b66843673f01c7df2b89479b32e0ed634e43a91cff62a5"
+dependencies = [
+ "autocfg",
+ "hashbrown",
+]
 
 [[package]]
 name = "inline_tweak"
@@ -382,6 +406,7 @@ dependencies = [
 name = "instruments"
 version = "0.1.0"
 dependencies = [
+ "code_generation_macro",
  "concat-idents",
  "cpal",
  "dyn-clone",
@@ -389,8 +414,8 @@ dependencies = [
  "gilrs",
  "glam",
  "hexodsp",
+ "indexmap",
  "inline_tweak",
- "linkme",
  "packed_simd_2",
  "pom",
  "portmidi",
@@ -497,26 +522,6 @@ checksum = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324"
 dependencies = [
  "libc",
  "pkg-config",
-]
-
-[[package]]
-name = "linkme"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04f7a548defb4c688d16c333586fe92907d774c2df78037ab098b8f7202bf7fb"
-dependencies = [
- "linkme-impl",
-]
-
-[[package]]
-name = "linkme-impl"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "befcc41894750103e29b7d4b0763bbf807eb723ce78626c461cf6dadb84124ac"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -695,9 +700,9 @@ dependencies = [
 
 [[package]]
 name = "packed_simd_2"
-version = "0.3.5"
+version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e64858a2d3733fdd61adfdd6da89aa202f7ff0e741d2fc7ed1e452ba9dc99d7"
+checksum = "71c0c06716cfc81616fa8e22b721ce92fecd594508bc0eb3d04ae3ef35ac10c5"
 dependencies = [
  "cfg-if 0.1.10",
  "libm",
@@ -1034,9 +1039,9 @@ checksum = "6446ced80d6c486436db5c078dde11a9f73d42b57fb273121e160b84f63d894c"
 
 [[package]]
 name = "syn"
-version = "1.0.72"
+version = "1.0.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1e8cdbefb79a9a5a65e0db8b47b723ee907b7c7f8496c76a1770b5c310bab82"
+checksum = "c6f107db402c2c2055242dbf4d2af0e69197202e9faacbef9571bbe47f5a1b84"
 dependencies = [
  "proc-macro2",
  "quote",

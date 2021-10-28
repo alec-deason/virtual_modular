@@ -1,4 +1,5 @@
 #![feature(exact_size_is_empty)]
+extern crate code_generation_macro;
 use std::{
     sync::Arc,
     convert::TryFrom
@@ -6,36 +7,12 @@ use std::{
 use ringbuf::{RingBuffer, Producer, Consumer};
 use portmidi as pm;
 use gilrs::{Gilrs, EventType, Event};
+use generic_array::typenum::*;
 
-use ::instruments::{simd_graph::*, InstrumentSynth, dynamic_graph::{DynamicGraph, BoxedDynamicNode}};
+use ::instruments::{simd_graph::*, voices::*, InstrumentSynth, dynamic_graph::{DynamicGraph, BoxedDynamicNode, DynamicGraphBuilder}};
 use packed_simd_2::f32x8;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-
-const DEFAULT_SYNTH: &'static str = "# Sequence
-rhythm_gate=sine(16.0)
-rhythm_rnd=turing_machine(rhythm_gate,0.9,8)
-
-rnd=turing_machine(rhythm_rnd,0.9,8)
-
-# Pitch mapping
-pitch=rescale(440.0,880.0,rnd)
-
-# Oscillator
-top_tone=saw(pitch)
-sub_pitch=mul(0.25,pitch)
-sub_tone=sine(sub_pitch)
-tone=add(top_tone,sub_tone)
-envelope=ad(0.01,0.02,rhythm_rnd)
-enveloped_tone=mul(envelope,tone)
-
-# Final
-filter=lpf(440,0.7,enveloped_tone)
-
-(output,0,filter)
-(output,1,filter)
-";
-
 
 fn main() {
     let synth_path = std::env::args().nth(1);
@@ -43,9 +20,9 @@ fn main() {
     let mut builder = InstrumentSynth::builder();
 
     let mut graph = if let Some(synth_data) = synth_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
-        DynamicGraph::parse(&synth_data).unwrap()
+        DynamicGraphBuilder::default().parse(&synth_data).unwrap()
     } else {
-        DynamicGraph::parse(DEFAULT_SYNTH).unwrap()
+        panic!()
     };
 
     let inputs = Arc::clone(&graph.external_inputs);
@@ -55,6 +32,9 @@ fn main() {
         let context = pm::PortMidi::new().unwrap();
         use std::time::Duration;
         let timeout = Duration::from_millis(10);
+
+        let mut voices:Vec<_> = (0..4).map(|i| (i, None)).collect();
+        let mut current_voice = 0;
 
         let info = context.device(1).unwrap();
         let in_ports = context
@@ -69,13 +49,13 @@ fn main() {
                 while let Some(Event { id, event, time }) = gilrs.next_event() {
                     match event {
                         EventType::AxisChanged(a, v, ..) => {
-                            inputs.insert(format!("pad_{:?}", a), v);
+                            inputs.entry(format!("pad_{:?}", a)).or_insert_with(Vec::new).push(v);
                         }
                         EventType::ButtonPressed(b, ..) => {
-                            inputs.insert(format!("pad_{:?}", b), 1.0);
+                            inputs.entry(format!("pad_{:?}", b)).or_insert_with(Vec::new).push(1.0);
                         }
                         EventType::ButtonReleased(b, ..) => {
-                            inputs.insert(format!("pad_{:?}", b), 0.0);
+                            inputs.entry(format!("pad_{:?}", b)).or_insert_with(Vec::new).push(0.0);
                         }
                         _ => ()
                     }
@@ -87,23 +67,68 @@ fn main() {
                             let message = wmidi::MidiMessage::try_from(&data[..]).unwrap();
                             match message {
                                 wmidi::MidiMessage::NoteOn(c,n,v) => {
-                                    inputs.insert(format!("midi_{}_freq", c.index()), n.to_freq_f32());
-                                    inputs.insert(format!("midi_{}_velocity", c.index()), u8::try_from(v).unwrap() as f32 / 127.0);
+                                    if c.index() == 0 {
+                                        let mut consumed = None;
+                                        let mut aval = None;
+                                        for (i, (j,f)) in voices.iter_mut().enumerate() {
+                                            if Some(n) == *f {
+                                                consumed = Some(i);
+                                                break
+                                            } else if f.is_none() && aval.is_none(){
+                                                aval = Some((i, *j));
+                                            }
+                                        }
+                                        if let Some(i) = consumed {
+                                            inputs.entry(format!("midi_voice_{}_velocity", i)).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
+                                        } else {
+                                            let (aval, voice) = if let Some((aval, voice)) = aval {
+                                                (aval, voice)
+                                            } else {
+                                                (0, voices[0].0)
+                                            };
+                                            inputs.entry(format!("midi_voice_{}_freq", voice)).or_insert_with(Vec::new).push(n.to_freq_f32());
+                                            inputs.entry(format!("midi_voice_{}_velocity", voice)).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
+                                            voices.remove(aval);
+                                            voices.insert(0, (voice, Some(n)));
+                                            voices.rotate_left(1);
+                                        }
+                                    }
+                                    if u8::try_from(n).unwrap() != current_voice {
+                                        current_voice = u8::try_from(n).unwrap();
+                                        inputs.entry(format!("midi_mono_{}_freq", c.index())).or_insert_with(Vec::new).push(n.to_freq_f32());
+                                        inputs.entry(format!("midi_mono_{}_velocity", c.index())).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
+                                        inputs.entry(format!("midi_mono_{}_velocity", c.index())).or_insert_with(Vec::new).push(0.0);
+                                    }
+                                    inputs.entry(format!("midi_{}_freq", c.index())).or_insert_with(Vec::new).push(n.to_freq_f32());
+                                    inputs.entry(format!("midi_{}_velocity", c.index())).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
                                 }
                                 wmidi::MidiMessage::NoteOff(c,n,v) => {
-                                    inputs.insert(format!("midi_{}_freq", c.index()), n.to_freq_f32());
-                                    inputs.insert(format!("midi_{}_velocity", c.index()), 0.0);
+                                    if c.index() == 0 {
+                                        for (i, (j, f)) in voices.iter_mut().enumerate() {
+                                            if Some(n) == *f {
+                                                *f = None;
+                                                inputs.entry(format!("midi_voice_{}_velocity", j)).or_insert_with(Vec::new).push(0.0);
+                                            }
+                                        }
+                                    }
+                                    if u8::try_from(n).unwrap() == current_voice {
+                                        current_voice = 0;
+                                        inputs.entry(format!("midi_mono_{}_freq", c.index())).or_insert_with(Vec::new).push(n.to_freq_f32());
+                                        inputs.entry(format!("midi_mono_{}_velocity", c.index())).or_insert_with(Vec::new).push(0.0);
+                                    }
+                                    inputs.entry(format!("midi_{}_freq", c.index())).or_insert_with(Vec::new).push(n.to_freq_f32());
+                                    inputs.entry(format!("midi_{}_velocity", c.index())).or_insert_with(Vec::new).push(0.0);
                                 }
                                 wmidi::MidiMessage::PitchBendChange(c,b) => {
-                                    inputs.insert(format!("midi_{}_pitch_bend", c.index()), (u16::try_from(b).unwrap() as f32 / 2.0f32.powi(14) - 0.5) * 2.0);
+                                    inputs.entry(format!("midi_{}_pitch_bend", c.index())).or_insert_with(Vec::new).push((u16::try_from(b).unwrap() as f32 / 2.0f32.powi(14) - 0.5) * 2.0);
                                 }
                                 wmidi::MidiMessage::ControlChange(c,wmidi::ControlFunction::MODULATION_WHEEL,v) => {
                                     let v = u8::try_from(v).unwrap() as f32 / 127.0;
-                                    inputs.insert(format!("midi_{}_mod_wheel", c.index()), v);
+                                    inputs.entry(format!("midi_{}_mod_wheel", c.index())).or_insert_with(Vec::new).push(v);
                                 } 
                                 wmidi::MidiMessage::ControlChange(c,wmidi::ControlFunction::DAMPER_PEDAL,v) =>{
                                     let v = u8::try_from(v).unwrap() as f32 / 127.0;
-                                    inputs.insert(format!("midi_{}_pedal", c.index()), v);
+                                    inputs.entry(format!("midi_{}_pedal", c.index())).or_insert_with(Vec::new).push(v);
                                 }
                                 _ => ()
                             }

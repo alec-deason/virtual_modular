@@ -1,44 +1,21 @@
-tempo=4
-clock=Sine(tempo)
-harmonic_tempo=tempo/20
-seq=seq[0 4 5 0 4 7](harmonic_tempo)
-pad_attack=(1/harmonic_tempo)*0.3
-pad_decay=(1/harmonic_tempo)*0.7
-detune_drift=1
-pad_osc1_1=Svfl(ScaleDegreeMajor(seq-7)+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1),0,0,Saw(ScaleDegreeMajor(seq-7)+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1))*Ad(pad_attack, pad_decay, seq|1))
-pad_osc1_2=Svfl(ScaleDegreeMajor(seq-7)+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1),0,0,Saw(ScaleDegreeMajor(seq-7)+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1))*Ad(pad_attack, pad_decay, seq|1))
-pad_osc1_3=Svfl(ScaleDegreeMajor(seq-7)+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1),0,0,Saw(ScaleDegreeMajor(seq-7)+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1))*Ad(pad_attack, pad_decay, seq|1))
-pad_osc1=(pad_osc1_1+pad_osc1_2)+pad_osc1_3
-pad_osc2_1=Square(ScaleDegreeMajor(seq-7)+(2+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1)), Brownian(0.1,0,1,seq|1))*Ad(pad_attack, pad_decay, seq|1)
-pad_osc2_2=Square(ScaleDegreeMajor(seq-7)+(2+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1)), Brownian(0.1,0,1,seq|1))*Ad(pad_attack, pad_decay, seq|1)
-pad_osc2_3=Square(ScaleDegreeMajor(seq-7)+(2+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1)), Brownian(0.1,0,1,seq|1))*Ad(pad_attack, pad_decay, seq|1)
-pad_osc2=(pad_osc2_1+pad_osc2_2)+pad_osc2_3
-pad_osc3_1=Square(ScaleDegreeMajor(seq-7)+(4+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1)), Brownian(0.1,0,1,seq|1))*Ad(pad_attack, pad_decay, seq|1)
-pad_osc3_2=Square(ScaleDegreeMajor(seq-7)+(4+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1)), Brownian(0.1,0,1,seq|1))*Ad(pad_attack, pad_decay, seq|1)
-pad_osc3_3=Square(ScaleDegreeMajor(seq-7)+(4+Brownian(0.01,-1 * detune_drift,detune_drift,seq|1)), Brownian(0.1,0,1,seq|1))*Ad(pad_attack, pad_decay, seq|1)
-pad_osc3=(pad_osc3_1+pad_osc3_2)+pad_osc3_3
+kick_trigger=input|0+0
+snare_trigger=input|1+0
+closed_hat_trigger=input|2+0
+open_hat_trigger=input|3+0
+snare_resonance=input|4+0
 
-pad = Svfb(Brownian(20,60,300,Sine(tempo)), 0.3, 0, (pad_osc1 + pad_osc2) + pad_osc3)
-(reverb, 2, (pad*Rescale(0.7,1,(Noise(50)+1)/2))*0.05)
-(reverb, 3, (pad*Rescale(0.7,1,(Noise(50)+1)/2))*0.05)
+kick_freq=37
+kick0=Sine(kick_freq*8)*Ad(0.02, 0.05, kick_trigger)
+kick=Sine(kick_freq*((kick0*0.9)+1))*Ad(0.025, 0.2, kick_trigger)
 
-kick=Svfb(60,0.9,0,Pd(4, clock))
-(reverb, 2, kick)
-(reverb, 3, kick)
+snare_freq=100
+snare0=Sine(snare_freq*28)*Ad(0.01, 0.01, snare_trigger)
+snare_noise=Svfh(1000,snare_resonance,0,Noise(10000)*Ad(0.02, 0.2, snare_trigger))*0.04
+snare=(Sine(snare_freq*((snare0*4.9)+1))*Ad(0.05, 0.025, snare_trigger))+snare_noise
 
-hat1=Svfb(160,0.9,0,Pd(2, clock))+(Svfl(Brownian(1,100,1500,clock),0.1,0,Noise(660)*Ad(0.05, 0.02, Bg(Brownian(0.01,0.5,0.9,clock), Pd(2, clock))))*0.5)
-(reverb, 2, hat1*0.3)
-(reverb, 3, hat1*0.3)
+closed_hat=Svfb(1000, 0.9, 0, closed_hat_trigger*10)+Svfl(3000,0,0,Noise(1000)*Ad(0.01, 0.01, closed_hat_trigger))
+open_hat=Svfb(1000, 0.9, 0, open_hat_trigger*10)+Svfl(3000,0,0,Noise(1000)*Ad(0.01, 0.2, open_hat_trigger))
 
-hat2=Svfb(600,0.9,0,Bg(0.5, Pd(2, clock)))+(Svfl(Brownian(1,100,1500,clock),0.1,0,Noise(660)*Ad(0.05, 0.02, Bg(Brownian(0.01,0.5,0.9,clock), Pd(2, clock))))*0.5)
-(reverb, 2, hat1*0.3)
-(reverb, 3, hat1*0.3)
+drums=(kick+(snare*0.9))+((closed_hat*0.05)+(open_hat*0.05))
 
-melodic_seq=seq[0 2 4 <4 7> 2 6](4)
-melody_osc1=Sine(ScaleDegreeMajor(seq+melodic_seq))*Ad(0.1, 0.1, melodic_seq|1)
-(reverb, 2, melody_osc1)
-(reverb, 3, melody_osc1)
-
-reverb=Reverb(1,1)
-(output, 0, reverb|0)
-(output, 1, reverb|1)
+(output,0,drums)

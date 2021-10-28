@@ -414,7 +414,6 @@ dependencies = [
  "generic-array",
  "gilrs",
  "glam",
- "hexodsp",
  "indexmap",
  "inline_tweak",
  "linkme",

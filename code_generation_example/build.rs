@@ -9,7 +9,7 @@ use instruments::{
 
 fn main() {
     let source = std::fs::read_to_string("synth.synth").unwrap();
-    let rust_source = to_rust(&DynamicGraph::parse_inner(&source).unwrap());
+    let (rust_source, input_count) = to_rust(&DynamicGraph::parse_inner(&source).unwrap());
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("synth.rs");
@@ -18,10 +18,10 @@ fn main() {
         &format!("
             use instruments::simd_graph::*;
             use generic_array::typenum::*;
-            pub fn build_synth() -> impl Node<Input=U0, Output=U2> {{
+            pub fn build_synth() -> impl Node<Input=U{}, Output=U2> + Clone {{
             {}
         }}
-        ", rust_source)
+        ", input_count, rust_source)
     ).unwrap();
     std::process::Command::new("rustfmt")
             .arg(&dest_path)

@@ -5,14 +5,350 @@ use std::{
     cell::RefCell,
     convert::{TryFrom, TryInto},
 };
-use linkme::distributed_slice;
 
 use packed_simd_2::f32x8;
 
-use generic_array::{ArrayLength, typenum::{ToInt, U0, U2}, arr};
+use generic_array::{ArrayLength, typenum::{ToInt, U0, U1, U2}, arr};
 use crate::{
     simd_graph::{Node, Ports},
 };
+use crate::{simd_graph::*, voices::*};
+
+#[macro_export]
+macro_rules! dynamic_nodes {
+    ($loader_name:ident {$($name:ident: $constructor:expr),*}) => {
+        #[macro_export]
+        macro_rules! $loader_name {
+            ($builder:expr) => {
+                $(
+                    println!("{}", stringify!($name));
+                    $builder.templates.insert(stringify!($name).to_string(), (BoxedDynamicNode::new($constructor), stringify!($constructor).to_string()));
+                )*
+            }
+        }
+    }
+}
+
+dynamic_nodes!{
+    std_nodes {
+        Add: Add,
+        Sub: Sub,
+        Mul: Mul,
+        Div: Div,
+        Imp: Impulse::default(),
+        Comp: Comparator,
+        Sine: WaveTable::sine(),
+        Psine: WaveTable::positive_sine(),
+        Saw: WaveTable::saw(),
+        PulseOnLoad: PulseOnLoad::default(),
+        Noise: Noise::default(),
+        PNoise: Noise::positive(),
+        Ad: InlineADEnvelope::default(),
+        Adsr: InlineADSREnvelope::default(),
+        QImp: QuantizedImpulse::default(),
+        AllPass: AllPass::default(),
+        Sh: SampleAndHold::default(),
+        Pd: PulseDivider::default(),
+        Log: Log,
+        Pan: Pan,
+        MidSideDecoder: MidSideDecoder,
+        MidSideEncoder: MidSideEncoder,
+        Rescale: ModulatedRescale,
+        Svfl: SimperSvf::low_pass(),
+        Svfh: SimperSvf::high_pass(),
+        Svfb: SimperSvf::band_pass(),
+        Svfn: SimperSvf::notch(),
+        Looper: Looper::default(),
+        Toggle: Toggle::default(),
+        Portamento: Portamento::default(),
+        Reverb: Reverb::new(),
+        Delay: ModableDelay::new(),
+        Bg: BernoulliGate::default(),
+        C: Identity,
+        QuadSwitch: QuadSwitch::default(),
+        Folder: Folder,
+        EuclidianPulse: EuclidianPulse::default(),
+        PulseOnChange: PulseOnChange::default(),
+        Brownian: Brownian::default(),
+        LeadVoice: lead_voice(),
+        Compressor: SidechainCompressor::new(0.3),
+        MajorKeyMarkov: Markov::major_key_chords(),
+        ScaleMajor: Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]),
+        ScaleDegreeMajor: DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]),
+        ScaleDegreeMinor: DegreeQuantizer::new(&[18.35,20.60,21.83,24.50,27.50,29.14, 32.70]),
+        BowedString: BowedString::default(),
+        PluckedString: PluckedString::default()
+    }
+}
+
+#[derive(Clone)]
+pub struct DynamicGraphBuilder {
+    pub templates: HashMap<String, (BoxedDynamicNode, String)>,
+}
+
+impl Default for DynamicGraphBuilder {
+    fn default() -> Self {
+        let mut b = Self {
+            templates: Default::default()
+        };
+        std_nodes!(&mut b);
+        b
+    }
+}
+
+impl DynamicGraphBuilder {
+    pub fn parse(&self, data: &str) -> Result<DynamicGraph, String> {
+        let mut g = DynamicGraph::default();
+        let l = self.parse_inner(data)?;
+
+        g.reparse(&l)?;
+        Ok(g)
+    }
+
+    pub fn parse_inner(&self, data: &str) -> Result<Vec<Line>, String> {
+        use pom::parser::*;
+        use pom::parser::Parser;
+        use std::str::{self, FromStr};
+
+        fn node_name<'a>() -> Parser<'a, u8, String> {
+            let number = one_of(b"0123456789");
+            (one_of(b"abcdefghijklmnopqrstuvwxyzxy").repeat(1) + (one_of(b"abcdefghijklmnopqrstuvwxyzxy")| number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
+        }
+        fn node_constructor_name<'a>() -> Parser<'a, u8, String> {
+            let lowercase = one_of(b"abcdefghijklmnopqrstuvwxyzxy");
+            let uppercase = one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+            let number = one_of(b"0123456789");
+            (uppercase.repeat(1) + (lowercase | one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ") | number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
+        }
+
+        fn constructor_call<'a>() -> Parser<'a, u8, Expression> {
+            let parameters = (sym(b'(') * whitespace() * list(call(expression), whitespace() * sym(b',') - whitespace()) - whitespace() - sym(b')')).opt();
+
+            let r = node_constructor_name() + parameters;
+
+            r.map(|(constructor_name, parameters)| {
+                Expression::Term(Term::NodeConstructor(constructor_name, parameters))
+            })
+        }
+
+        fn term<'a>() -> Parser<'a, u8, Expression> {
+            let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
+            let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
+            let number = sym(b'-').opt() + integer + frac.opt();
+            let number = number
+                .collect()
+                .map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<f32>().unwrap())
+                .map(|n| Expression::Term(Term::Number(n)));
+            let port_number = one_of(b"0123456789").repeat(1..).collect().map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<usize>().unwrap());
+            let node_reference = (node_name() + (sym(b'|') * port_number).opt()).map(|(node, c)| Expression::Term(Term::Node(node, c.unwrap_or(0))));
+            let constructor = constructor_call();
+            let term = number | node_reference | constructor;
+            term
+        }
+        fn grouped_expression<'a>() -> Parser<'a, u8, Expression> {
+            call(term) | (sym(b'(') * call(expression) - sym(b')'))
+        }
+        fn expression<'a>() -> Parser<'a, u8, Expression> {
+            let operator = one_of(b"+-*/").repeat(1).collect().convert(str::from_utf8);
+
+            let r = (call(grouped_expression) - whitespace() + operator - whitespace() + call(grouped_expression)).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term);
+            r
+        }
+
+        fn number<'a>() -> Parser<'a, u8, f32> {
+            let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
+            let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
+            let exp = one_of(b"eE") + one_of(b"+-").opt() + one_of(b"0123456789").repeat(1..);
+            let number = sym(b'-').opt() + integer + frac.opt() + exp.opt();
+            number
+                .collect()
+                .convert(str::from_utf8)
+                .convert(f32::from_str)
+        }
+
+        fn interpolation<'a>() -> Parser<'a, u8, Interpolation> {
+            let constant = seq(b"c(") * number() - sym(b',') + number() - sym(b')');
+            let constant = constant.map(|(value, duration)| Interpolation::Constant { value , duration });
+            let linear = seq(b"l(") * number() - sym(b',') + number() - sym(b',') + number() - sym(b')');
+            let linear = linear.map(|((start, end), duration)| Interpolation::Linear{ start, end, duration });
+            constant | linear
+        }
+
+        fn automate<'a>() -> Parser<'a, u8, Vec<Line>> {
+
+            let name = (none_of(b"\n=[](),")).repeat(1..).convert(String::from_utf8) - sym(b'=');
+            let r = name + sym(b'[') * list(interpolation(), sym(b',')) - sym(b']');
+            r.map(|(k, es)| {
+                vec![Line::Node(k, "automation".to_string(), Some(NodeParameters::AutomationSequence(es)))]
+            })
+        }
+
+        fn sumseq<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let name = (none_of(b"\n=[](),")).repeat(1..).convert(String::from_utf8) - seq(b"=sumseq");
+            let r = name + sym(b'[') * list(sym(b'(') * number() - sym(b',') + number() - sym(b')'), sym(b',')) - sym(b']');
+            let parameter = (sym(b'(') * list(expression(), sym(b',')) - sym(b')')).opt();
+            let r = r + parameter;
+            r.map(|((k, ns), p)| {
+                let ns:Vec<_> = ns.into_iter().map(|(c,p)| (c as u32, p)).collect();
+                let ns:[(u32, f32); 4] = ns.try_into().unwrap();
+                let mut edges:Vec<_> = if let Some(p) = p {
+                    p.iter().enumerate().map(|(i,e)| {
+                        e.as_lines(k.clone(), i)
+                    }).flatten().collect()
+                } else {
+                    vec![]
+                };
+                edges.push(Line::Node(k, "sum_sequencer".to_string(), Some(NodeParameters::SumSequence(ns))));
+                edges
+            })
+        }
+
+        fn mn_modified_event<'a>() -> Parser<'a, u8, Subsequence> {
+            (call(mn_raw_event) + one_of(b"*/!") + number()).convert(|((e, o), n)| {
+                match o {
+                    b'*' => Ok(Subsequence::ClockMultiplier(Box::new(e),1.0/n)),
+                    b'/' => Ok(Subsequence::ClockMultiplier(Box::new(e),n)),
+                    b'!' => Ok(Subsequence::ClockMultiplier(Box::new(Subsequence::Tuplet((0..n.max(1.0) as usize).map(|_| e.clone()).collect(), 0)),1.0/n)),
+                    _ => Err(()),
+                }
+            })
+        }
+
+        fn mn_raw_event<'a>() -> Parser<'a, u8, Subsequence> {
+            call(mn_bracketed_pattern) | sym(b'~').map(|_| Subsequence::Rest(0.0)) | number().map(|n| Subsequence::Item(n, 0.0))
+        }
+
+        fn mn_event<'a>() -> Parser<'a, u8, Subsequence> {
+            call(mn_modified_event) | call(mn_raw_event)
+        }
+
+        fn mn_sequence<'a>() -> Parser<'a, u8, Vec<Subsequence>> {
+            list(call(mn_event), sym(b' ').repeat(1..))
+        }
+
+        fn mn_repeat<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'[') * whitespace() * call(mn_sequence) - whitespace() - sym(b']'))
+            .convert(|s| {
+                if s.is_empty() {
+                    Err(())
+                } else {
+                    Ok(Subsequence::Tuplet(s, 0))
+                }
+            })
+        }
+
+        fn mn_cycle<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'<') * whitespace() * call(mn_sequence) - whitespace() - sym(b'>'))
+            .convert(|s| {
+                if s.is_empty() {
+                    Err(())
+                } else {
+                    Ok(Subsequence::Iter(s, 0))
+                }
+            })
+        }
+
+        fn mn_choice<'a>() -> Parser<'a, u8, Subsequence> {
+            (sym(b'|') * whitespace() * call(mn_sequence) - whitespace() - sym(b'|'))
+            .convert(|s| {
+                if s.is_empty() {
+                    Err(())
+                } else {
+                    Ok(Subsequence::Choice(s, 0))
+                }
+            })
+        }
+
+        fn mn_bracketed_pattern<'a>() -> Parser<'a, u8, Subsequence> {
+            call(mn_repeat) | call(mn_cycle) | call(mn_choice)
+        }
+
+        fn sequencer<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let name = node_name() - seq(b"=seq");
+            let r = name + mn_bracketed_pattern();
+            let parameter = sym(b'(') * expression() - sym(b')');
+            let r = r + parameter;
+            r.map(|((node_name, sub_sequence), clock)| {
+                let mut edges = Vec::with_capacity(3);
+                edges.extend(clock.as_lines(node_name.clone(), 0));
+                edges.push(Line::Node(node_name, "pattern_sequencer".to_string(), Some(NodeParameters::PatternSequence(sub_sequence))));
+                edges
+            })
+        }
+        fn external_parameter<'a>() -> Parser<'a, u8, Vec<Line>> {
+            (none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b'=') - seq(b"e{") + none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}')).map(|(n,k)| {
+                vec![Line::ExternalParam(n, k)]
+            })
+        }
+
+        fn comment<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let comment = (sym(b'#') * none_of(b"\n").repeat(0..)) - sym(b'\n');
+            let empty_line = (sym(b'\n')).repeat(1);
+            (comment | empty_line).map(|_| vec![Line::Comment])
+        }
+        fn bridge<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let n_in = seq(b"b{") * none_of(b",").repeat(1..).convert(String::from_utf8) - sym(b',');
+            let n_out = none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}');
+            (n_in+n_out).map(|(n_in,n_out)| {
+                vec![
+                    Line::BridgeNode(n_in, n_out)
+                ]
+            })
+        }
+        fn synth<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let p = (comment() | bridge() | external_parameter() | sequencer() | sumseq() | node_definition() | automate() | edge() | node()).repeat(1..);
+            p.map(|ls| ls.into_iter().flatten().collect())
+        }
+        fn node_definition<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let p = (none_of(b"\n={,")).repeat(1..).convert(String::from_utf8) - sym(b'{') + call(synth) - sym(b'}') - sym(b'\n');
+            p.map(|(name, lines)| vec![Line::NodeDefinition(name, lines)])
+        }
+        fn node<'a>() -> Parser<'a, u8, Vec<Line>> {
+            (node_name() - whitespace() - sym(b'=') - whitespace() + expression() - whitespace() - sym(b'\n')).map(|(node_name, expression)| {
+                match expression {
+                    Expression::Term(Term::NodeConstructor(n,p)) => {
+                        let mut edges:Vec<_> = if let Some(p) = p {
+                            p.iter().enumerate().map(|(i,e)| {
+                                e.as_lines(node_name.clone(), i)
+                            }).flatten().collect()
+                        } else {
+                            vec![]
+                        };
+
+                        edges.push(Line::Node(node_name, n, None));
+                        edges
+                    }
+                    _ => {
+                        let mut edges = expression.as_lines(node_name.clone(), 0);
+                        edges.push(Line::Node(node_name, "C".to_string(), None));
+                        edges
+                    }
+                }
+            })
+        }
+        //fn include<'a>() -> Parser<'a, u8, Vec<Line>> {
+        //    let p = seq(b"include(") * none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b')') - whitespace() - sym(b'\n');
+        //    p.convert::<_, String, _>(|k| {
+        //        let data = std::fs::read_to_string(k.clone()).unwrap();
+        //        Ok(self.parse_inner(&data)?.into_iter().chain(vec![Line::Include(k)]).collect())
+        //    })
+        //}
+        fn whitespace<'a>() -> Parser<'a, u8, Vec<u8>> {
+            sym(b' ').repeat(0..)
+        }
+        fn edge<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let p = sym(b'(') * whitespace() *
+                none_of(b"),").repeat(1..).convert(String::from_utf8) - whitespace() - sym(b',') - whitespace() +
+                one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - whitespace() - sym(b',') - whitespace() +
+                expression()
+                - whitespace() - sym(b')') - whitespace() - sym(b'\n');
+            p.map(|((dst, i), e)| {
+                e.as_lines(dst, i as usize)
+            })
+        }
+        synth().parse(data.as_bytes()).map_err(|e| format!("{:?}", e))
+    }
+}
 
 pub trait DynamicNode: DynClone {
     fn process(&mut self);
@@ -221,14 +557,12 @@ impl DynamicNode for BoxedDynamicNode {
     }
 }
 
-#[distributed_slice]
-pub static MODULES: [(&'static str, fn() -> BoxedDynamicNode, &'static str)] = [..];
-
 #[derive(Clone, Default)]
 pub struct DynamicGraph {
     nodes: HashMap<String, (BoxedDynamicNode, String)>,
+    builder: DynamicGraphBuilder,
     dynamic_nodes: HashMap<String, Box<DynamicGraph>>,
-    pub external_inputs: Arc<Mutex<HashMap<String, f32>>>,
+    pub external_inputs: Arc<Mutex<HashMap<String, Vec<f32>>>>,
     external_input_nodes: HashMap<String, (String, f32)>,
     pub watch_list: Arc<Mutex<HashSet<String>>>,
     input: Vec<f32x8>,
@@ -242,9 +576,11 @@ pub struct DynamicGraph {
 
 impl DynamicGraph {
     pub fn process(&mut self) -> Ports<U2> {
-        if let Ok(ei) = self.external_inputs.lock() {
+        if let Ok(mut ei) = self.external_inputs.lock() {
             for (k, v) in self.external_input_nodes.values_mut() {
-                *v = *ei.get(k).unwrap_or(&0.0);
+                if let Some(nv) = ei.get_mut(k).and_then(|v| v.pop()) {
+                    *v = nv;
+                }
             }
         }
         self.output = (f32x8::splat(0.0), f32x8::splat(0.0));
@@ -347,7 +683,6 @@ impl DynamicGraph {
     }
 
     fn reparse(&mut self, l: &[Line]) -> Result<(), String> {
-        let module_constructors: HashMap<_,_> = MODULES.iter().enumerate().map(|(i, (n, _f, _c))| (n.to_string(), i)).collect();
         self.edges.clear();
         let mut nodes = HashMap::new();
         let mut definitions = HashMap::new();
@@ -369,7 +704,7 @@ impl DynamicGraph {
                 _ => ()
             }
         }
-        self.nodes.retain(|k,v| nodes.get(k).map(|ty| &v.1==ty).unwrap_or(false));
+        self.nodes.retain(|k,v| nodes.get(k).map(|ty| &v.1==ty && ty != "pattern_sequencer").unwrap_or(false));
         self.external_input_nodes.clear();
         self.dynamic_nodes.retain(|k,v| nodes.contains_key(k));
         self.reset_edges.clear();
@@ -413,8 +748,8 @@ impl DynamicGraph {
                                 }
                             },
                             _ => {
-                                if let Some(i) = module_constructors.get(ty) {
-                                    let mut n = MODULES[*i].1();
+                                if let Some(template) = self.builder.templates.get(ty) {
+                                    let mut n = template.0.clone();
                                     n.set_sample_rate(self.sample_rate);
                                     self.add_boxed_node(k.clone(), ty.clone(), n);
                                 } else if let Some(n) = definitions.get(ty) {
@@ -431,7 +766,7 @@ impl DynamicGraph {
                     }
                 }
                 Line::BridgeNode(in_node, out_node) => {
-                    let (a, b) = Bridge::new(f32x8::splat(0.0));
+                    let (a, b) = Bridge::<U1>::new();
                     self.add_node(in_node.clone(), "bridge_in".to_string(), a);
                     self.add_node(out_node.clone(), "bridge_out".to_string(), b);
                 }
@@ -474,258 +809,7 @@ impl DynamicGraph {
         }
     }
 
-    pub fn parse(data: &str) -> Result<Self, String> {
-        let mut g = DynamicGraph::default();
-        let l = Self::parse_inner(data)?;
 
-        g.reparse(&l)?;
-        Ok(g)
-    }
-
-
-    pub fn parse_inner(data: &str) -> Result<Vec<Line>, String> {
-        use pom::parser::*;
-        use pom::parser::Parser;
-        use std::str::{self, FromStr};
-
-        fn node_name<'a>() -> Parser<'a, u8, String> {
-            let number = one_of(b"0123456789");
-            (one_of(b"abcdefghijklmnopqrstuvwxyzxy").repeat(1) + (one_of(b"abcdefghijklmnopqrstuvwxyzxy")| number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
-        }
-        fn node_constructor_name<'a>() -> Parser<'a, u8, String> {
-            let lowercase = one_of(b"abcdefghijklmnopqrstuvwxyzxy");
-            let uppercase = one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-            let number = one_of(b"0123456789");
-            (uppercase.repeat(1) + (lowercase | one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ") | number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
-        }
-
-        fn constructor_call<'a>() -> Parser<'a, u8, Expression> {
-            let parameters = (sym(b'(') * whitespace() * list(call(expression), whitespace() * sym(b',') - whitespace()) - whitespace() - sym(b')')).opt();
-
-            let r = node_constructor_name() + parameters;
-
-            r.map(|(constructor_name, parameters)| {
-                Expression::Term(Term::NodeConstructor(constructor_name, parameters))
-            })
-        }
-
-        fn term<'a>() -> Parser<'a, u8, Expression> {
-            let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
-            let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
-            let number = sym(b'-').opt() + integer + frac.opt();
-            let number = number
-                .collect()
-                .map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<f32>().unwrap())
-                .map(|n| Expression::Term(Term::Number(n)));
-            let port_number = one_of(b"0123456789").repeat(1..).collect().map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<usize>().unwrap());
-            let node_reference = (node_name() + (sym(b'|') * port_number).opt()).map(|(node, c)| Expression::Term(Term::Node(node, c.unwrap_or(0))));
-            let constructor = constructor_call();
-            let term = number | node_reference | constructor;
-            term
-        }
-        fn grouped_expression<'a>() -> Parser<'a, u8, Expression> {
-            call(term) | (sym(b'(') * call(expression) - sym(b')'))
-        }
-        fn expression<'a>() -> Parser<'a, u8, Expression> {
-            let operator = one_of(b"+-*/").repeat(1).collect().convert(str::from_utf8);
-
-            let r = (call(grouped_expression) - whitespace() + operator - whitespace() + call(grouped_expression)).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term);
-            r
-        }
-
-        fn number<'a>() -> Parser<'a, u8, f32> {
-            let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
-            let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
-            let exp = one_of(b"eE") + one_of(b"+-").opt() + one_of(b"0123456789").repeat(1..);
-            let number = sym(b'-').opt() + integer + frac.opt() + exp.opt();
-            number
-                .collect()
-                .convert(str::from_utf8)
-                .convert(f32::from_str)
-        }
-
-        fn interpolation<'a>() -> Parser<'a, u8, Interpolation> {
-            let constant = seq(b"c(") * number() - sym(b',') + number() - sym(b')');
-            let constant = constant.map(|(value, duration)| Interpolation::Constant { value , duration });
-            let linear = seq(b"l(") * number() - sym(b',') + number() - sym(b',') + number() - sym(b')');
-            let linear = linear.map(|((start, end), duration)| Interpolation::Linear{ start, end, duration });
-            constant | linear
-        }
-
-        fn automate<'a>() -> Parser<'a, u8, Vec<Line>> {
-
-            let name = (none_of(b"\n=[](),")).repeat(1..).convert(String::from_utf8) - sym(b'=');
-            let r = name + sym(b'[') * list(interpolation(), sym(b',')) - sym(b']');
-            r.map(|(k, es)| {
-                vec![Line::Node(k, "automation".to_string(), Some(NodeParameters::AutomationSequence(es)))]
-            })
-        }
-
-        fn sumseq<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let name = (none_of(b"\n=[](),")).repeat(1..).convert(String::from_utf8) - seq(b"=sumseq");
-            let r = name + sym(b'[') * list(sym(b'(') * number() - sym(b',') + number() - sym(b')'), sym(b',')) - sym(b']');
-            let parameter = (sym(b'(') * list(expression(), sym(b',')) - sym(b')')).opt();
-            let r = r + parameter;
-            r.map(|((k, ns), p)| {
-                let ns:Vec<_> = ns.into_iter().map(|(c,p)| (c as u32, p)).collect();
-                let ns:[(u32, f32); 4] = ns.try_into().unwrap();
-                let mut edges:Vec<_> = if let Some(p) = p {
-                    p.iter().enumerate().map(|(i,e)| {
-                        e.as_lines(k.clone(), i)
-                    }).flatten().collect()
-                } else {
-                    vec![]
-                };
-                edges.push(Line::Node(k, "sum_sequencer".to_string(), Some(NodeParameters::SumSequence(ns))));
-                edges
-            })
-        }
-
-        fn mn_modified_event<'a>() -> Parser<'a, u8, Subsequence> {
-            (call(mn_raw_event) + one_of(b"*/!") + number()).convert(|((e, o), n)| {
-                match o {
-                    b'*' => Ok(Subsequence::ClockMultiplier(Box::new(e),1.0/n)),
-                    b'/' => Ok(Subsequence::ClockMultiplier(Box::new(e),n)),
-                    b'!' => Ok(Subsequence::ClockMultiplier(Box::new(Subsequence::Tuplet((0..n.max(1.0) as usize).map(|_| e.clone()).collect(), 0)),1.0/n)),
-                    _ => Err(()),
-                }
-            })
-        }
-
-        fn mn_raw_event<'a>() -> Parser<'a, u8, Subsequence> {
-            call(mn_bracketed_pattern) | sym(b'~').map(|_| Subsequence::Rest(0.0)) | number().map(|n| Subsequence::Item(n, 0.0))
-        }
-
-        fn mn_event<'a>() -> Parser<'a, u8, Subsequence> {
-            call(mn_modified_event) | call(mn_raw_event)
-        }
-
-        fn mn_sequence<'a>() -> Parser<'a, u8, Vec<Subsequence>> {
-            list(call(mn_event), sym(b' '))
-        }
-
-        fn mn_repeat<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'[') * call(mn_sequence) - sym(b']'))
-            .convert(|s| {
-                if s.is_empty() {
-                    Err(())
-                } else {
-                    Ok(Subsequence::Tuplet(s, 0))
-                }
-            })
-        }
-
-        fn mn_cycle<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'<') * call(mn_sequence) - sym(b'>'))
-            .convert(|s| {
-                if s.is_empty() {
-                    Err(())
-                } else {
-                    Ok(Subsequence::Iter(s, 0))
-                }
-            })
-        }
-
-        fn mn_choice<'a>() -> Parser<'a, u8, Subsequence> {
-            (sym(b'|') * call(mn_sequence) - sym(b'|'))
-            .convert(|s| {
-                if s.is_empty() {
-                    Err(())
-                } else {
-                    Ok(Subsequence::Choice(s, 0))
-                }
-            })
-        }
-
-        fn mn_bracketed_pattern<'a>() -> Parser<'a, u8, Subsequence> {
-            call(mn_repeat) | call(mn_cycle) | call(mn_choice)
-        }
-
-        fn sequencer<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let name = node_name() - seq(b"=seq");
-            let r = name + mn_bracketed_pattern();
-            let parameter = sym(b'(') * expression() - sym(b')');
-            let r = r + parameter;
-            r.map(|((node_name, sub_sequence), clock)| {
-                let mut edges = Vec::with_capacity(3);
-                edges.extend(clock.as_lines(node_name.clone(), 0));
-                edges.push(Line::Node(node_name, "pattern_sequencer".to_string(), Some(NodeParameters::PatternSequence(sub_sequence))));
-                edges
-            })
-        }
-        fn external_parameter<'a>() -> Parser<'a, u8, Vec<Line>> {
-            (none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b'=') - seq(b"e{") + none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}')).map(|(n,k)| {
-                vec![Line::ExternalParam(n, k)]
-            })
-        }
-
-        fn comment<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let comment = (sym(b'#') * none_of(b"\n").repeat(0..)) - sym(b'\n');
-            let empty_line = (sym(b'\n')).repeat(1);
-            (comment | empty_line).map(|_| vec![Line::Comment])
-        }
-        fn bridge<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let n_in = seq(b"b{") * none_of(b",").repeat(1..).convert(String::from_utf8) - sym(b',');
-            let n_out = none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}');
-            (n_in+n_out).map(|(n_in,n_out)| {
-                vec![
-                    Line::BridgeNode(n_in, n_out)
-                ]
-            })
-        }
-        fn synth<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let p = (comment() | bridge() | external_parameter() | sequencer() | sumseq() | node_definition() | automate() | include() | edge() | node()).repeat(1..);
-            p.map(|ls| ls.into_iter().flatten().collect())
-        }
-        fn node_definition<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let p = (none_of(b"\n={,")).repeat(1..).convert(String::from_utf8) - sym(b'{') + call(synth) - sym(b'}') - sym(b'\n');
-            p.map(|(name, lines)| vec![Line::NodeDefinition(name, lines)])
-        }
-        fn node<'a>() -> Parser<'a, u8, Vec<Line>> {
-            (node_name() - whitespace() - sym(b'=') - whitespace() + expression() - whitespace() - sym(b'\n')).map(|(node_name, expression)| {
-                match expression {
-                    Expression::Term(Term::NodeConstructor(n,p)) => {
-                        let mut edges:Vec<_> = if let Some(p) = p {
-                            p.iter().enumerate().map(|(i,e)| {
-                                e.as_lines(node_name.clone(), i)
-                            }).flatten().collect()
-                        } else {
-                            vec![]
-                        };
-
-                        edges.push(Line::Node(node_name, n, None));
-                        edges
-                    }
-                    _ => {
-                        let mut edges = expression.as_lines(node_name.clone(), 0);
-                        edges.push(Line::Node(node_name, "C".to_string(), None));
-                        edges
-                    }
-                }
-            })
-        }
-        fn include<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let p = seq(b"include(") * none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b')') - whitespace() - sym(b'\n');
-            p.convert::<_, String, _>(|k| {
-                let data = std::fs::read_to_string(k.clone()).unwrap();
-                Ok(DynamicGraph::parse_inner(&data)?.into_iter().chain(vec![Line::Include(k)]).collect())
-            })
-        }
-        fn whitespace<'a>() -> Parser<'a, u8, Vec<u8>> {
-            sym(b' ').repeat(0..)
-        }
-        fn edge<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let p = sym(b'(') * whitespace() *
-                none_of(b"),").repeat(1..).convert(String::from_utf8) - whitespace() - sym(b',') - whitespace() +
-                one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - whitespace() - sym(b',') - whitespace() +
-                expression()
-                - whitespace() - sym(b')') - whitespace() - sym(b'\n');
-            p.map(|((dst, i), e)| {
-                e.as_lines(dst, i as usize)
-            })
-        }
-        synth().parse(data.as_bytes()).map_err(|e| format!("{:?}", e))
-    }
 }
 #[derive(Clone, Debug)]
 pub enum NodeParameters {
@@ -755,7 +839,7 @@ impl Node for DynamicGraph {
             reparse_data = d.take();
         }
         if let Some(d) = reparse_data {
-            let l = Self::parse_inner(&d);
+            let l = self.builder.parse_inner(&d);
             match l {
                 Ok(l) => {
                     let mut g = self.clone();
@@ -785,55 +869,4 @@ impl Node for DynamicGraph {
 }
 
 
-use crate::simd_graph::*;
 
-macro_rules! dynamic_node {
-    ($name:expr, $static_name:ident, $constructor:expr) => {
-            concat_idents::concat_idents!(fn_name = "__MODULE_fn_", $name {
-                fn fn_name() -> BoxedDynamicNode {
-                    BoxedDynamicNode::new($constructor)
-                }
-
-                #[distributed_slice(MODULES)]
-                static $static_name: (&'static str, fn() -> BoxedDynamicNode, &'static str) = ($name, fn_name, stringify!($constructor));
-        });
-    }
-}
-dynamic_node!("Add", __MODULE_add, Add);
-dynamic_node!("Sub", __MODULE_sub, Sub);
-dynamic_node!("Mul", __MODULE_mul, Mul);
-dynamic_node!("Div", __MODULE_div, Div);
-dynamic_node!("Imp", __MODULE_impulse, Impulse::default());
-dynamic_node!("Comp", __MODULE_comp, Comparator);
-dynamic_node!("Sine", __MODULE_sine, WaveTable::sine());
-dynamic_node!("Psine", __MODULE_psine, WaveTable::positive_sine());
-dynamic_node!("Saw", __MODULE_saw, WaveTable::saw());
-#[cfg(feature = "square")]
-dynamic_node!("Square", __MODULE_square, SquareWave::default());
-dynamic_node!("Noise", __MODULE_noise, Noise::default());
-dynamic_node!("Ad", __MODULE_ad, InlineADEnvelope::default());
-dynamic_node!("Adsr", __MODULE_asd, InlineADSREnvelope::default());
-dynamic_node!("Sh", __MODULE_sh, SampleAndHold::default());
-dynamic_node!("Pd", __MODULE_pd, PulseDivider::default());
-dynamic_node!("Log", __MODULE_log, Log);
-dynamic_node!("Pan", __MODULE_Pan, Pan);
-dynamic_node!("MidSideDecoder", __MODULE_MidSideDecoder, MidSideDecoder);
-dynamic_node!("MidSideEncoder", __MODULE_MidSideEncoder, MidSideEncoder);
-dynamic_node!("Rescale", __MODULE_rescale, ModulatedRescale);
-dynamic_node!("Svfl", __MODULE_svf_low, SimperSvf::low_pass());
-dynamic_node!("Svfh", __MODULE_svf_high, SimperSvf::high_pass());
-dynamic_node!("Svfb", __MODULE_svf_band, SimperSvf::band_pass());
-dynamic_node!("Svfn", __MODULE_svf_notch, SimperSvf::notch());
-dynamic_node!("Looper", __MODULE_looper, Looper::default());
-dynamic_node!("Portamento", __MODULE_portamento, Portamento::default());
-dynamic_node!("Reverb", __MODULE_reverb, Reverb::new());
-dynamic_node!("Delay", __MODULE_modable_delay, ModableDelay::new());
-dynamic_node!("Bg", __MODULE_BernoulliGate, BernoulliGate::default());
-dynamic_node!("C", __MODULE_Identity, Identity);
-dynamic_node!("QuadSwitch", __MODULE_QuadSwitch, QuadIterSwitch::default());
-dynamic_node!("Folder", __MODULE_Folder, Folder);
-dynamic_node!("Brownian", __MODULE_Brownian, Brownian::default());
-dynamic_node!("Compressor", __MODULE_Compressor, SidechainCompressor::new(0.3));
-dynamic_node!("MajorKeyMarkov", __MODULE_MajorKeyMarkov, Markov::major_key_chords());
-dynamic_node!("ScaleMajor", __MODULE_scale_major, Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]));
-dynamic_node!("ScaleDegreeMajor", __MODULE_scale_major_degree, DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]));

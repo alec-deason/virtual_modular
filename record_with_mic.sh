@@ -18,4 +18,4 @@ trap 'kill $(jobs -p)' EXIT
 echo "Recording to $WAV ..."
 parec | sox -r 44.1k -e signed -b 16 -c 2 -t raw - "$WAV"_voice.ogg &
 parec -d "$MONITOR" | sox -r 44.1k -e signed -b 16 -c 2 -t raw - "$WAV".ogg &
-wf-recorder -f "$WAV"_video.mp4 -o HDMI-A-2
+wf-recorder -f "$WAV"_video.mp4

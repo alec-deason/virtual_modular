@@ -1,7 +1,6 @@
 use dyn_clone::DynClone;
 use packed_simd_2::{f32x8, u32x8};
 use rand::prelude::*;
-use linkme::distributed_slice;
 use portmidi as pm;
 use std::{
     cell::RefCell,
@@ -10,7 +9,7 @@ use std::{
     convert::TryFrom,
     sync::{Arc, Mutex},
 };
-use generic_array::{ArrayLength, GenericArray, typenum::{U0, U1, U2, U3, U4, U5}, arr, sequence::{Concat, Split}};
+use generic_array::{ArrayLength, GenericArray, typenum::{U0, U1, U2, U3, U4, U5, U10}, arr, sequence::{Concat, Split}};
 
 pub type Ports<N> = GenericArray<f32x8, N>;
 
@@ -165,26 +164,24 @@ impl<A: ArrayLength<f32x8>> Node for Sink<A> {
 }
 
 #[derive(Clone)]
-pub struct Stack<A: Clone, B: Clone, C: Clone, D: Clone>(A, B, PhantomData<C>, PhantomData<D>);
-impl<A, B, C, D> Stack<A, B, C, D>
+pub struct Stack<A: Clone, B: Clone, C: Clone>(A, B, PhantomData<C>);
+impl<A, B, C> Stack<A, B, C>
 where
     A: Node + Clone,
     B: Node + Clone,
     C: Clone,
-    D: Clone,
 {
     pub fn new(a: A, b: B) -> Self {
-        Self(a, b, Default::default(), Default::default())
+        Self(a, b, Default::default())
     }
 }
-impl<A, B, C, D, E, F> Node for Stack<A, B, F, D>
+impl<A, B, C, D, E> Node for Stack<A, B, D>
 where
     A: Node<Input= C, Output= E> + Clone,
     B: Node + Clone,
     C: ArrayLength<f32x8> + std::ops::Add<B::Input, Output= D>,
     D: ArrayLength<f32x8> + std::ops::Sub<C, Output=B::Input>,
     E: ArrayLength<f32x8> + std::ops::Add<B::Output, Output= D>,
-    F: ArrayLength<f32x8>,
 {
     type Input = <A::Input as std::ops::Add<B::Input>>::Output;
     type Output = <A::Output as std::ops::Add<B::Output>>::Output;
@@ -311,21 +308,23 @@ where
 }
 
 
+*/
 #[derive(Clone,Default)]
 pub struct PulseOnLoad(bool);
 impl Node for PulseOnLoad {
-    type Input = NoValue;
-    type Output = Value<(f32,)>;
+    type Input = U0;
+    type Output = U1;
     #[inline]
-    fn process(&mut self, _input: Self::Input) -> Self::Output {
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
         if self.0 {
-            Value((0.0,))
+            arr![f32x8; f32x8::splat(0.0)]
         } else {
             self.0 = true;
-            Value((1.0,))
+            arr![f32x8; f32x8::from_slice_unaligned(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])]
         }
     }
 }
+/*
 #[derive(Clone)]
 pub struct RawConstant<A:ValueT>(pub A::Inner);
 impl<A: ValueT> Node for RawConstant<A> {
@@ -381,14 +380,66 @@ impl Node for One {
 
 */
 #[derive(Clone)]
-pub struct ArcConstant(pub Arc<RefCell<f32x8>>);
-impl ArcConstant {
+pub struct RingBufConstant<A: ArrayLength<f32x8>>(Arc<ringbuf::Consumer<(usize, f32)>>, Ports<A>);
+impl<A: ArrayLength<f32x8>> RingBufConstant<A> {
+    pub fn new() -> (Self, ringbuf::Producer<(usize, f32)>) {
+        let buf = ringbuf::RingBuffer::new(100);
+        let (p,c) = buf.split();
+        (RingBufConstant(Arc::new(c), Default::default()), p)
+    }
+}
+impl<A: ArrayLength<f32x8>> Node for RingBufConstant<A> {
+    type Input = U0;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
+        while let Some((i,v)) = Arc::get_mut(&mut self.0).and_then(|b| b.pop()) {
+            self.1[i] = f32x8::splat(v);
+        }
+        self.1.clone()
+    }
+}
+#[derive(Clone)]
+pub struct ArcConstant<A: ArrayLength<f32x8>>(pub Arc<RefCell<Ports<A>>>);
+impl<A: ArrayLength<f32x8>>  ArcConstant<A> {
+    pub fn new(a: Ports<A>) -> (Self, Arc<RefCell<Ports<A>>>) {
+        let cell = Arc::new(RefCell::new(a));
+        (Self(Arc::clone(&cell)), cell)
+    }
+}
+impl<A: ArrayLength<f32x8>> Node for ArcConstant<A> {
+    type Input = U0;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
+        self.0.borrow().clone()
+    }
+}
+#[derive(Clone)]
+pub struct MutexConstant<A: ArrayLength<f32x8>>(pub Arc<Mutex<Ports<A>>>);
+impl<A: ArrayLength<f32x8>>  MutexConstant<A> {
+    pub fn new(a: Ports<A>) -> (Self, Arc<Mutex<Ports<A>>>) {
+        let mutex = Arc::new(Mutex::new(a));
+        (Self(Arc::clone(&mutex)), mutex)
+    }
+}
+impl<A: ArrayLength<f32x8>> Node for MutexConstant<A> {
+    type Input = U0;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
+        self.0.lock().unwrap().clone()
+    }
+}
+#[derive(Clone)]
+pub struct OneArcConstant(pub Arc<RefCell<f32x8>>);
+impl OneArcConstant {
     pub fn new(a: f32x8) -> (Self, Arc<RefCell<f32x8>>) {
         let cell = Arc::new(RefCell::new(a));
         (Self(Arc::clone(&cell)), cell)
     }
 }
-impl Node for ArcConstant {
+impl Node for OneArcConstant {
     type Input = U0;
     type Output = U1;
     #[inline]
@@ -416,14 +467,48 @@ impl<A: ValueT> Node for RawArcConstant<A> {
 */
 
 #[derive(Clone)]
-pub struct Bridge(pub Arc<RefCell<f32x8>>);
-impl Bridge {
-    pub fn new(a: f32x8) -> (Self, ArcConstant) {
-        let (constant, cell) = ArcConstant::new(a);
+pub struct Bridge<A: ArrayLength<f32x8>>(pub Arc<RefCell<Ports<A>>>);
+impl<A: ArrayLength<f32x8>> Bridge<A> {
+    pub fn new() -> (Self, ArcConstant<A>) {
+        let (constant, cell) = ArcConstant::new(Default::default());
         (Self(cell), constant)
     }
 }
-impl Node for Bridge {
+impl<A: ArrayLength<f32x8>> Node for Bridge<A> {
+    type Input = A;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        *self.0.borrow_mut() = input.clone();
+        input
+    }
+}
+#[derive(Clone)]
+pub struct MutexBridge<A: ArrayLength<f32x8>>(pub Arc<Mutex<Ports<A>>>);
+impl<A: ArrayLength<f32x8>> MutexBridge<A> {
+    pub fn new() -> (Self, MutexConstant<A>) {
+        let (constant, cell) = MutexConstant::new(Default::default());
+        (Self(cell), constant)
+    }
+}
+impl<A: ArrayLength<f32x8>> Node for MutexBridge<A> {
+    type Input = A;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        *self.0.lock().unwrap() = input.clone();
+        input
+    }
+}
+#[derive(Clone)]
+pub struct OneBridge(pub Arc<RefCell<f32x8>>);
+impl OneBridge {
+    pub fn new() -> (Self, OneArcConstant) {
+        let (constant, cell) = OneArcConstant::new(Default::default());
+        (Self(cell), constant)
+    }
+}
+impl Node for OneBridge {
     type Input = U1;
     type Output = U1;
     #[inline]
@@ -518,24 +603,28 @@ where
 pub struct InlineADEnvelope {
     time: f32,
     triggered: bool,
+    running_cycle: bool,
     current: f32,
     per_sample: f32
 }
 impl Node for InlineADEnvelope {
-    type Input = U3;
-    type Output = U1;
+    type Input = U4;
+    type Output = U2;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (attack, decay, gate) = (input[0], input[1], input[2]);
+        let (attack, decay, gate, do_loop) = (input[0], input[1], input[2], input[3]);
         let mut r = f32x8::splat(0.0);
+        let mut eoc = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let attack = attack.extract(i);
             let decay = decay.extract(i);
             let gate = gate.extract(i);
+            let do_loop = do_loop.extract(i);
             if gate > 0.5 {
                 if !self.triggered {
                     self.triggered = true;
                     self.time = 0.0;
+                    self.running_cycle = true;
                 }
             } else {
                 if self.triggered {
@@ -549,13 +638,21 @@ impl Node for InlineADEnvelope {
                 let t = (self.time - attack) / decay;
                 1.0-t
             } else {
+                if self.running_cycle {
+                    if do_loop > 0.5 {
+                        self.time = 0.0;
+                    } else {
+                        self.running_cycle = false;
+                    }
+                    eoc = eoc.replace(i, 1.0);
+                }
                 0.0
             };
             self.current = self.current * 0.001 + v * 0.999;
             r = r.replace(i, self.current);
         }
 
-        arr![f32x8; r]
+        arr![f32x8; r, eoc]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -806,16 +903,20 @@ impl WaveTable {
 }
 
 impl Node for WaveTable {
-    type Input = U1;
+    type Input = U2;
     type Output = U1;
 
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let reset = input[1];
         let input = input[0];
         let d = 1.0 / (self.sample_rate / self.len);
 
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
+            if reset.extract(i) > 0.5 {
+                self.idx = 0.0;
+            }
             if self.idx >= self.len {
                 self.idx -= self.len;
             }
@@ -1582,7 +1683,7 @@ impl Node for Mix {
 */
 
 #[derive(Copy, Clone, Default)]
-pub struct PulseDivider(u32, bool);
+pub struct PulseDivider(u64, bool);
 
 impl Node for PulseDivider {
     type Input = U2;
@@ -1594,7 +1695,7 @@ impl Node for PulseDivider {
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let gate = gate.extract(i);
-            let division = division.extract(i) as u32;
+            let division = division.extract(i).round() as u64;
             if gate > 0.5 {
                 if !self.1 {
                     self.0 += 1;
@@ -1602,11 +1703,8 @@ impl Node for PulseDivider {
                 }
             } else if self.1 {
                 self.1 = false;
-                if self.0 == division {
-                    self.0 = 0;
-                }
             }
-            if self.1 && self.0 == division {
+            if self.1 && division > 0 && self.0 % division == 0 {
                 r = r.replace(i, gate);
             }
         }
@@ -2171,13 +2269,14 @@ where
         NoValue
     }
 }
-
+*/
 #[derive(Clone)]
 pub struct EuclidianPulse {
     pulses: u32,
     len: u32,
     steps: Vec<bool>,
     idx: usize,
+    triggered: bool,
 }
 impl Default for EuclidianPulse {
     fn default() -> Self {
@@ -2186,17 +2285,20 @@ impl Default for EuclidianPulse {
             len: 0,
             steps: vec![],
             idx: 0,
+            triggered: false,
         }
     }
 }
 
 impl Node for EuclidianPulse {
-    type Input = Value<((f32, f32), f32x8)>;
-    type Output = Value<(f32x8,)>;
+    type Input = U3;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value(((pulses, len), gate)) = input;
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let pulses = input[0].max_element();
+        let len = input[1].max_element();
+        let gate = input[2];
         let pulses = pulses as u32;
         let len = len as u32;
         if pulses != self.pulses || len != self.len {
@@ -2208,13 +2310,18 @@ impl Node for EuclidianPulse {
         for i in 0..f32x8::lanes() {
             let gate = gate.extract(i);
             if gate > 0.5 {
-                self.idx = (self.idx + 1) % self.len as usize;
-                if self.steps[self.idx] {
-                    r = r.replace(i, 1.0);
+                if !self.triggered {
+                    self.triggered = true;
+                    self.idx = (self.idx + 1) % self.len as usize;
+                    if self.steps[self.idx] {
+                        r = r.replace(i, 1.0);
+                    }
                 }
+            } else {
+                self.triggered = false;
             }
         }
-        Value((r,))
+        arr![f32x8; r]
     }
 }
 
@@ -2230,7 +2337,6 @@ fn make_euclidian_rhythm(pulses: u32, len: u32, steps: &mut Vec<bool>) {
         }
     }
 }
-*/
 
 #[derive(Clone)]
 pub struct Folder;
@@ -2251,6 +2357,7 @@ impl Node for Folder {
         arr![f32x8; r ]
     }
 }
+
 /*
 
 #[derive(Clone, Default)]
@@ -2713,20 +2820,18 @@ impl Node for Looper {
         }
     }
 }
-/*
 #[derive(Clone, Default)]
 pub struct Toggle {
     value: bool,
     triggered: bool,
 }
 impl Node for Toggle {
-    type Input = Value<(f32,)>;
-    type Output = Value<(f32,)>;
+    type Input = U1;
+    type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Self::Input) -> Self::Output {
-        let Value((gate,)) = input;
-        if gate > 0.5 {
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        if input[0].max_element() > 0.5 {
             if !self.triggered {
                 self.triggered = true;
                 self.value = !self.value;
@@ -2734,9 +2839,10 @@ impl Node for Toggle {
         } else {
             self.triggered = false;
         }
-        Value((if self.value { 1.0 } else { 0.0 },))
+        arr![f32x8; f32x8::splat(if self.value { 1.0 } else { 0.0 })]
     }
 }
+/*
 
 #[derive(Copy, Clone, Default)]
 pub struct ProbImpulse(bool);
@@ -3092,7 +3198,7 @@ impl Node for ModableDelay {
         let (len,sig) = (input[0], input[1]);
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
-            let len = len.extract(i).max(0.001);
+            let len = len.extract(i).max(0.000001);
             self.delay.resize((len*self.rate) as usize, 0.0);
             let sig = sig.extract(i);
             self.idx = (self.idx+1) % self.delay.len();
@@ -3102,12 +3208,12 @@ impl Node for ModableDelay {
                 line_end += self.delay.len() as f32;
             }
             line_end %= self.delay.len() as f32;
-            //let t = line_end.fract();
-            //let a = self.delay[line_end.floor() as usize];
-            //let b = self.delay[line_end.ceil() as usize % self.delay.len()];
-            //let v = a * (1.0-t) + b * t;
-            //r = r.replace(i, v);
-            r = r.replace(i, self.delay[line_end as usize]);
+            let t = line_end.fract();
+            let a = self.delay[line_end.floor() as usize];
+            let b = self.delay[line_end.ceil() as usize % self.delay.len()];
+            let v = a * (1.0-t) + b * t;
+            r = r.replace(i, v);
+            //r = r.replace(i, self.delay[line_end as usize]);
         }
         arr![f32x8; r]
     }
@@ -3118,10 +3224,36 @@ impl Node for ModableDelay {
 }
 
 #[derive(Clone)]
+pub struct GenericIdentity<A: ArrayLength<f32x8>>(PhantomData<A>);
+impl<A: ArrayLength<f32x8>> Default for GenericIdentity<A> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+impl<A: ArrayLength<f32x8>> Node for GenericIdentity<A> {
+    type Input = A;
+    type Output = A;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        input
+    }
+}
+#[derive(Clone)]
 pub struct Identity;
 impl Node for Identity {
     type Input = U1;
     type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        input
+    }
+}
+
+#[derive(Clone)]
+pub struct Inputs;
+impl Node for Inputs {
+    type Input = U10;
+    type Output = U10;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         input
@@ -3225,31 +3357,35 @@ impl Subsequence {
         }
     }
 
-    fn current(&mut self, dt: f32) -> (f32, bool, bool) {
+    fn current(&mut self, pulse: bool, clock_division: f32) -> (f32, bool, bool, bool, bool) {
         match self {
             Subsequence::Rest(clock) => {
-                *clock += dt;
-                let do_tick = if *clock >= 1.0 {
+                if pulse {
+                    *clock += 1.0;
+                }
+                let do_tick = if *clock >= clock_division {
                     *clock = 0.0;
                     true
                 } else {
                     false
                 };
-                (0.0, do_tick, false)
+                (0.0, do_tick, false, false, false)
             },
             Subsequence::Item(v, clock) => {
-                *clock += dt;
-                let (do_tick, do_trigger) = if *clock >= 1.0 {
+                if pulse {
+                    *clock += 1.0;
+                }
+                let (do_tick, do_trigger, gate) = if *clock >= clock_division {
                     *clock = 0.0;
-                    (true, true)
+                    (true, true, true)
                 } else {
-                    (false, false)
+                    (false, false, true)
                 };
-                (*v, do_tick, do_trigger)
+                (*v, do_tick, do_trigger, gate, false)
             },
             Subsequence::Tuplet(sub_sequence, sub_idx) => {
-                let dt = dt * sub_sequence.len() as f32;
-                let (v, do_tick, do_trigger) = sub_sequence[*sub_idx].current(dt);
+                let clock_division = clock_division / sub_sequence.len() as f32;
+                let (v, do_tick, do_trigger, gate, _) = sub_sequence[*sub_idx].current(pulse, clock_division);
                 let do_tick = if do_tick {
                     *sub_idx += 1;
                     if *sub_idx >= sub_sequence.len() {
@@ -3261,34 +3397,34 @@ impl Subsequence {
                 } else {
                     false
                 };
-                (v, do_tick, do_trigger)
+                (v, do_tick, do_trigger, gate, do_tick)
             }
             Subsequence::Iter(sub_sequence, sub_idx) => {
-                let (v, do_tick, do_trigger) = sub_sequence[*sub_idx].current(dt);
-                let do_tick = if do_tick {
+                let (v, do_tick, do_trigger, gate, _) = sub_sequence[*sub_idx].current(pulse, clock_division);
+                let (do_tick, end_of_cycle) = if do_tick {
                     *sub_idx += 1;
-                    if *sub_idx >= sub_sequence.len() {
+                    let end_of_cycle = if *sub_idx >= sub_sequence.len() {
                         *sub_idx = 0;
-                    }
-                    true
+                        true
+                    } else { false };
+                    (true, end_of_cycle)
                 } else {
-                    false
+                    (false, false)
                 };
-                (v, do_tick, do_trigger)
+                (v, do_tick, do_trigger, gate, end_of_cycle)
             }
             Subsequence::Choice(sub_sequence, sub_idx) => {
-                let (v, do_tick, do_trigger) = sub_sequence[*sub_idx].current(dt);
+                let (v, do_tick, do_trigger, gate, _) = sub_sequence[*sub_idx].current(pulse, clock_division);
                 let do_tick = if do_tick {
                     *sub_idx = thread_rng().gen_range(0..sub_sequence.len());
                     true
                 } else {
                     false
                 };
-                (v, do_tick, do_trigger)
+                (v, do_tick, do_trigger, gate, false)
             }
             Subsequence::ClockMultiplier(sub_sequence, mul) => {
-                let dt = dt * *mul;
-                sub_sequence.current(dt)
+                sub_sequence.current(pulse, clock_division / *mul)
             }
         }
     }
@@ -3306,6 +3442,7 @@ impl Subsequence {
 pub struct PatternSequencer {
     sequence: Subsequence,
     per_sample: f32,
+    triggered: bool,
 }
 
 impl PatternSequencer {
@@ -3313,19 +3450,46 @@ impl PatternSequencer {
         Self {
             sequence,
             per_sample: 0.0,
+            triggered: false,
         }
     }
 }
 
 impl Node for PatternSequencer {
     type Input = U1;
-    type Output = U2;
+    type Output = U4;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let freq = input[0].max_element();
+        let mut r_trig = f32x8::splat(0.0);
+        let mut r_gate = f32x8::splat(0.0);
+        let mut r_eoc = f32x8::splat(0.0);
+        let mut r_value = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let trigger = input[0].extract(i);
+            let mut pulse = false;
+            if trigger > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    pulse = true;
+                }
+            } else {
+                self.triggered = false;
+            }
 
-        let (v,_,t) = self.sequence.current((self.per_sample * freq)/self.sequence.len() as f32);
-        arr![f32x8; f32x8::splat(v), f32x8::splat(if t { 1.0 } else { 0.0 })]
+            let (v,_,t,g,eoc) = self.sequence.current(pulse, 24.0 * self.sequence.len() as f32);
+            if g {
+                r_gate = r_gate.replace(i, 1.0);
+            }
+            if t {
+                r_trig = r_trig.replace(i, 1.0);
+                r_gate = r_gate.replace(i, 0.0);
+            }
+            if eoc {
+                r_eoc = r_eoc.replace(i, 1.0);
+            }
+            r_value = r_value.replace(i, v);
+        }
+        arr![f32x8; r_value, r_trig, r_gate, r_eoc]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -3372,7 +3536,15 @@ impl Node for BernoulliGate {
 pub struct Noise {
     clock: f32,
     value: f32,
+    positive: bool,
     per_sample: f32,
+}
+impl Noise {
+    pub fn positive() -> Self {
+        let mut r = Self::default();
+        r.positive = true;
+        r
+    }
 }
 
 impl Node for Noise {
@@ -3387,7 +3559,11 @@ impl Node for Noise {
             let period = 1.0/freq.extract(i);
             self.clock += self.per_sample;
             if self.clock >= period {
-                self.value = thread_rng().gen_range(-1.0..1.0);
+                if self.positive {
+                    self.value = thread_rng().gen_range(0.0..1.0);
+                } else {
+                    self.value = thread_rng().gen_range(-1.0..1.0);
+                }
                 self.clock = 0.0;
             }
             r = r.replace(i, self.value);
@@ -3402,17 +3578,20 @@ impl Node for Noise {
 }
 
 #[derive(Clone, Default)]
-pub struct QuadIterSwitch {
+pub struct QuadSwitch {
     triggered: bool,
+    pidx: usize,
+    slew: f32,
     idx: usize,
+    per_sample: f32,
 }
 
-impl Node for QuadIterSwitch {
-    type Input = U2;
+impl Node for QuadSwitch {
+    type Input = U3;
     type Output = U4;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (trigger, sig) = (input[0], input[1]);
+        let (trigger, index, sig) = (input[0], input[1], input[2]);
         let mut r = [
             f32x8::splat(0.0),
             f32x8::splat(0.0),
@@ -3422,17 +3601,30 @@ impl Node for QuadIterSwitch {
         for i in 0..f32x8::lanes() {
             let trigger = trigger.extract(i);
             let sig = sig.extract(i);
+            let mut index = index.extract(i);
             if trigger > 0.5 {
                 if !self.triggered {
                     self.triggered = true;
-                    self.idx = (self.idx + 1) % 4;
+                    self.pidx = self.idx;
+                    while index < 0.0 {
+                        index += 4.0;
+                    }
+                    self.idx =  index as usize % 4;
+                    self.slew = 0.0;
                 }
             } else {
                 self.triggered = false;
             }
-            r[self.idx] = r[self.idx].replace(i, sig);
+            self.slew += self.per_sample*100.0;
+
+            r[self.idx] = r[self.idx].replace(i, r[self.idx].extract(i) + sig * self.slew.min(1.0));
+            r[self.pidx] = r[self.pidx].replace(i, r[self.pidx].extract(i) + sig * (1.0-self.slew.min(1.0)));
         }
         arr![f32x8; r[0], r[1], r[2], r[3] ]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate;
     }
 }
 
@@ -3639,5 +3831,355 @@ impl Node for Markov {
             r = r.replace(i, self.transitions[self.current_state].0);
         }
         arr![f32x8; r]
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct PulseOnChange(f32);
+impl Default for PulseOnChange {
+    fn default() -> Self {
+        Self(f32::NAN)
+    }
+}
+
+impl Node for PulseOnChange {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let v = input[0].extract(i);
+            if v != self.0 {
+                self.0 = v;
+                r = r.replace(i, 1.0);
+            }
+        }
+        arr![f32x8; r]
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct QuantizedImpulse {
+    pending: bool,
+    next_imp: f32,
+    current_imp: f32,
+    aux_current: f32,
+    aux_next: f32,
+    triggered: bool,
+    clock_triggered: bool,
+}
+impl Node for QuantizedImpulse {
+    type Input = U3;
+    type Output = U2;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let src_imp = input[0];
+        let clock = input[1];
+        let src_aux = input[2];
+
+        let mut imp = f32x8::splat(0.0);
+        let mut aux = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let src_imp = src_imp.extract(i);
+            let clock = clock.extract(i);
+            if src_imp > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.aux_next = src_aux.extract(i);
+                    self.pending = true;
+                    self.next_imp = 1.0;
+                }
+            } else {
+                self.triggered = false;
+                self.pending = true;
+                self.next_imp = 0.0;
+            }
+            if clock > 0.5 {
+                if !self.clock_triggered {
+                    self.clock_triggered = true;
+                    if self.pending {
+                        self.aux_current = self.aux_next;
+                        self.current_imp = self.next_imp;
+                        self.pending = false;
+                    }
+                }
+            } else {
+                self.clock_triggered = false;
+            }
+            aux = aux.replace(i, self.aux_current);
+            imp = imp.replace(i, self.current_imp);
+        }
+        arr![f32x8; imp, aux]
+    }
+}
+
+#[derive(Clone)]
+pub struct BowedString {
+    nut_to_bow: DelayLine,
+    bow_to_bridge: DelayLine,
+    per_sample: f64,
+    string_filter: OnePole,
+    body_filters: [Biquad; 6],
+}
+
+impl Default for BowedString {
+    fn default() -> Self {
+        Self {
+            nut_to_bow: DelayLine::default(),
+            bow_to_bridge: DelayLine::default(),
+            per_sample: 1.0/44100.0,
+            string_filter: OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9),
+            body_filters: [
+                Biquad::new(1.0,  1.5667, 0.3133, -0.5509, -0.3925),
+                Biquad::new(1.0, -1.9537, 0.9542, -1.6357, 0.8697),
+                Biquad::new(1.0, -1.6683, 0.8852, -1.7674, 0.8735),
+                Biquad::new(1.0, -1.8585, 0.9653, -1.8498, 0.9516),
+                Biquad::new(1.0, -1.9299, 0.9621, -1.9354, 0.9590),
+                Biquad::new(1.0, -1.9800, 0.9888, -1.9867, 0.9923),
+            ]
+        }
+    }
+}
+
+impl Node for BowedString {
+    type Input = U4;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0];
+        let bow_velocity = input[1];
+        let bow_force = input[2];
+        let bow_position = input[3];
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let freq = freq.extract(i) as f64;
+            let bow_velocity = bow_velocity.extract(i) as f64;
+            let bow_force = bow_force.extract(i) as f64;
+            let total_l = (1.0/freq.max(20.0))/self.per_sample;
+            let bow_position = ((bow_position.extract(i) as f64 + 1.0)/2.0).max(0.01).min(0.99);
+
+            let bow_nut_l = total_l*(1.0-bow_position);
+            let bow_bridge_l = total_l*bow_position;
+
+            self.nut_to_bow.set_delay(bow_nut_l);
+            self.bow_to_bridge.set_delay(bow_bridge_l);
+
+            let nut = -self.nut_to_bow.next();
+            let bridge = -self.string_filter.tick(self.bow_to_bridge.next());
+
+
+            let dv = bow_velocity - (nut+bridge);
+
+            let phat = ((dv+0.001)*bow_force + 0.75).powf(-4.0).max(0.0).min(0.98);
+
+
+
+            self.bow_to_bridge.tick(nut + phat*dv);
+            self.nut_to_bow.tick(bridge + phat*dv);
+
+
+            let mut output = bridge;
+            for f in self.body_filters.iter_mut() {
+                output = f.tick(output);
+            }
+
+            r = r.replace(i, output as f32);
+        }
+        arr![f32x8; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate as f64;
+        self.string_filter = OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), 0.9);
+    }
+}
+
+#[derive(Clone)]
+pub struct PluckedString {
+    main_string: DelayLine,
+    triggered: bool,
+    per_sample: f64,
+    string_filter: OnePole,
+}
+
+impl Default for PluckedString {
+    fn default() -> Self {
+        Self {
+            main_string: DelayLine::default(),
+            triggered: false,
+            per_sample: 1.0/44100.0,
+            string_filter: OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9),
+        }
+    }
+}
+
+impl Node for PluckedString {
+    type Input = U2;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0];
+        let trigger = input[1];
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let freq = freq.extract(i) as f64;
+            let trigger = trigger.extract(i);
+
+            let total_l = (1.0/freq.max(20.0))/self.per_sample;
+            self.main_string.set_delay(total_l);
+
+            let mut v = self.main_string.next();
+            r = r.replace(i, v as f32);
+            if trigger > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    v += 10.0;
+                }
+            } else {
+                self.triggered = false;
+            }
+            self.main_string.tick(-v);
+        }
+        arr![f32x8; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate as f64;
+        self.string_filter = OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), 0.9);
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+struct Biquad {
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+    gain: f64,
+
+    x0: f64,
+    x1: f64,
+    x2: f64,
+    y1: f64,
+    y2: f64,
+}
+
+impl Biquad {
+    fn new(b0: f64, b1: f64, b2: f64, a1: f64, a2: f64) -> Self {
+        Self {
+            b0,
+            b1,
+            b2,
+            a1,
+            a2,
+            gain: 1.0,
+
+            x0: 0.0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+        }
+    }
+
+    fn tick(&mut self, input: f64) -> f64 {
+        self.x0 = self.gain * input;
+        let mut output = self.b0 * self.x0 + self.b1 * self.x1 + self.b2 * self.x2;
+        output -= self.a2 * self.y2 + self.a1 * self.y1;
+        self.x2 = self.x1;
+        self.x1 = self.x0;
+        self.y2 = self.y1;
+        self.y1 = output;
+
+        output
+    }
+}
+
+
+#[derive(Copy, Clone, Default)]
+struct OnePole {
+    b0: f64,
+    a1: f64,
+
+    y1: f64,
+
+    gain: f64,
+}
+
+impl OnePole {
+    fn new(pole: f64, gain: f64) -> Self {
+        let b0 = if pole > 0.0 {
+            1.0 - pole
+        } else {
+            1.0 + pole
+        };
+        Self {
+            b0,
+            a1: -pole,
+
+            y1: 0.0,
+
+            gain
+        }
+    }
+
+    fn tick(&mut self, input: f64) -> f64 {
+        let output = self.b0 * self.gain * input - self.a1 * self.y1;
+        self.y1 = output;
+        output
+    }
+}
+
+#[derive(Clone, Default)]
+struct DelayLine {
+    line: Vec<f64>,
+    in_index: usize,
+    out_index: f64,
+    desired_out_index: f64,
+    delay: f64,
+}
+
+impl DelayLine {
+    fn set_delay(&mut self, delay: f64) {
+        self.delay = delay;
+        if delay as usize > self.line.len() {
+            self.line.resize(self.delay as usize, 0.0);
+        }
+
+        let mut out_index = self.in_index as f64 - delay;
+        while out_index < 0.0 {
+            out_index += self.line.len() as f64;
+        }
+        self.desired_out_index = out_index;
+    }
+
+    fn tick(&mut self, input: f64) {
+        self.line[self.in_index] = input;
+        self.in_index += 1;
+        if self.in_index >= self.line.len() {
+            self.in_index = 0;
+        }
+        self.out_index += 1.0;
+        if self.out_index >= self.line.len() as f64{
+            self.out_index = 0.0;
+        }
+        self.desired_out_index += 1.0;
+        if self.desired_out_index >= self.line.len() as f64{
+            self.desired_out_index = 0.0;
+        }
+    }
+
+    fn next(&mut self) -> f64 {
+        self.out_index += 0.9*(self.desired_out_index - self.out_index);
+        let alpha = self.out_index.fract();
+        let mut out = self.line[self.out_index as usize] * (1.0-alpha);
+        out += if self.out_index + 1.0 >= self.line.len() as f64 {
+            self.line[0]
+        } else {
+            self.line[self.out_index as usize+ 1]
+        } * alpha;
+        out
     }
 }

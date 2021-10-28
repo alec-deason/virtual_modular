@@ -2,6 +2,7 @@
 #[macro_use] pub mod dynamic_graph;
 pub mod code_generator;
 pub mod simd_graph;
+pub mod voices;
 use simd_graph::Ports;
 use packed_simd_2::f32x8;
 use generic_array::{arr, typenum::{U0, U2}};

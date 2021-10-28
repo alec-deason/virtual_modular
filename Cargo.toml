@@ -11,11 +11,10 @@ square = ["hexodsp"]
 [dependencies]
 rand = "0.8.3"
 dyn-clone = "1.0.4"
-packed_simd_2 = "0.3.5"
+packed_simd_2 = "0.3.6"
 inline_tweak = "1.0.8"
 concat-idents = "1.1.2"
 pom = "3.2.0"
-linkme = "0.2.6"
 portmidi = "0.2.5"
 wmidi = "4.0.6"
 uuid = { version="0.8.2", features=["v4"] }
@@ -29,6 +28,7 @@ indexmap = "1.6.2"
 
 [dev-dependencies]
 cpal = "0.13"
+code_generation_macro = { path = "./code_generation_macro" }
 
 #[profile.release]
 # debug = true
