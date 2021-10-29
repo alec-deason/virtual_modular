@@ -9,7 +9,7 @@ use std::{
     convert::TryFrom,
     sync::{Arc, Mutex},
 };
-use generic_array::{ArrayLength, GenericArray, typenum::{U0, U1, U2, U3, U4, U5, U10}, arr, sequence::{Concat, Split}};
+use generic_array::{ArrayLength, GenericArray, typenum::{U0, U1, U2, U3, U4, U5, U10, U12}, arr, sequence::{Concat, Split}};
 
 pub type Ports<N> = GenericArray<f32x8, N>;
 
@@ -2968,6 +2968,27 @@ impl Node for Comparator {
     }
 }
 
+#[derive(Copy, Clone, Default)]
+pub struct CXor;
+impl Node for CXor {
+    type Input = U2;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (a,b) = (input[0], input[1]);
+
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let a = a.extract(i);
+            let b = b.extract(i);
+            let v = a.max(b).min(-a.min(b));
+            r = r.replace(i, v);
+        }
+        arr![f32x8; r]
+    }
+}
+
 //https://www.musicdsp.org/en/latest/Filters/92-state-variable-filter-double-sampled-stable.html
 #[derive(Copy, Clone, Default)]
 pub struct SimperSvf {
@@ -3176,15 +3197,13 @@ impl Node for Reverb {
 
 #[derive(Clone)]
 pub struct ModableDelay {
-    delay: Vec<f32>,
-    idx: usize,
+    line: DelayLine,
     rate: f32,
 }
 impl ModableDelay {
     pub fn new() -> Self {
         Self {
-            delay: vec![0.0; (0.09*44100.0) as usize],
-            idx: 0,
+            line: DelayLine::default(),
             rate: 0.0,
         }
     }
@@ -3199,21 +3218,10 @@ impl Node for ModableDelay {
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let len = len.extract(i).max(0.000001);
-            self.delay.resize((len*self.rate) as usize, 0.0);
+            self.line.set_delay((len*self.rate) as f64);
             let sig = sig.extract(i);
-            self.idx = (self.idx+1) % self.delay.len();
-            self.delay[self.idx] = sig;
-            let mut line_end = self.idx as f32 + 1.0;//- self.delay.len() as f32;
-            while line_end < 0.0 {
-                line_end += self.delay.len() as f32;
-            }
-            line_end %= self.delay.len() as f32;
-            let t = line_end.fract();
-            let a = self.delay[line_end.floor() as usize];
-            let b = self.delay[line_end.ceil() as usize % self.delay.len()];
-            let v = a * (1.0-t) + b * t;
-            r = r.replace(i, v);
-            //r = r.replace(i, self.delay[line_end as usize]);
+            self.line.tick(sig as f64);
+            r = r.replace(i, self.line.next() as f32);
         }
         arr![f32x8; r]
     }
@@ -3429,7 +3437,7 @@ impl Subsequence {
         }
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         match self {
             Subsequence::Item(..) | Subsequence::Iter(..) | Subsequence::Choice(..) | Subsequence::Rest(..) => 1,
             Subsequence::Tuplet(sub_sequence, ..) => sub_sequence.len(),
@@ -3996,57 +4004,240 @@ impl Node for BowedString {
 }
 
 #[derive(Clone)]
-pub struct PluckedString {
-    main_string: DelayLine,
-    triggered: bool,
+pub struct ImaginaryGuitar {
+    strings: Vec<(DelayLine, f64, OnePole, bool)>,
     per_sample: f64,
-    string_filter: OnePole,
+    body_filters: [Biquad; 6],
 }
 
-impl Default for PluckedString {
+impl Default for ImaginaryGuitar {
     fn default() -> Self {
         Self {
-            main_string: DelayLine::default(),
-            triggered: false,
+            strings: vec![
+                ({
+                    let mut l = DelayLine::default();
+                    l.set_delay((1.0/329.63)*44100.0);
+                    l
+                }, 329.63, OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9), false),
+                ({
+                    let mut l = DelayLine::default();
+                    l.set_delay((1.0/246.94)*44100.0);
+                    l
+                }, 246.94, OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9), false),
+                ({
+                    let mut l = DelayLine::default();
+                    l.set_delay((1.0/196.0)*44100.0);
+                    l
+                }, 196.0, OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9), false),
+                ({
+                    let mut l = DelayLine::default();
+                    l.set_delay((1.0/146.83)*44100.0);
+                    l
+                }, 146.83, OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9), false),
+                ({
+                    let mut l = DelayLine::default();
+                    l.set_delay((1.0/110.0)*44100.0);
+                    l
+                }, 110.0, OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9), false),
+                ({
+                    let mut l = DelayLine::default();
+                    l.set_delay((1.0/82.40)*44100.0);
+                    l
+                }, 82.0, OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9), false),
+            ],
+            body_filters: [
+                Biquad::new(1.0,  1.5667, 0.3133, -0.5509, -0.3925),
+                Biquad::new(1.0, -1.9537, 0.9542, -1.6357, 0.8697),
+                Biquad::new(1.0, -1.6683, 0.8852, -1.7674, 0.8735),
+                Biquad::new(1.0, -1.8585, 0.9653, -1.8498, 0.9516),
+                Biquad::new(1.0, -1.9299, 0.9621, -1.9354, 0.9590),
+                Biquad::new(1.0, -1.9800, 0.9888, -1.9867, 0.9923),
+            ],
             per_sample: 1.0/44100.0,
-            string_filter: OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9),
         }
     }
 }
 
-impl Node for PluckedString {
-    type Input = U2;
+impl Node for ImaginaryGuitar {
+    type Input = U12;
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let freq = input[0];
-        let trigger = input[1];
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
-            let freq = freq.extract(i) as f64;
-            let trigger = trigger.extract(i);
+            let crossover = 0.005;
 
-            let total_l = (1.0/freq.max(20.0))/self.per_sample;
-            self.main_string.set_delay(total_l);
-
-            let mut v = self.main_string.next();
-            r = r.replace(i, v as f32);
-            if trigger > 0.5 {
-                if !self.triggered {
-                    self.triggered = true;
-                    v += 10.0;
-                }
-            } else {
-                self.triggered = false;
+            let mut diffusion = 0.0;
+            for (s, _, _, _) in &mut self.strings {
+                let v = s.next();
+                diffusion += v;
             }
-            self.main_string.tick(-v);
+            diffusion /= self.strings.len() as f64;
+            for f in self.body_filters.iter_mut() {
+                diffusion = f.tick(diffusion);
+            }
+            r = r.replace(i, diffusion as f32);
+            for (j, (s, base_freq, f, triggered)) in self.strings.iter_mut().enumerate() {
+                let fret = input[j*2].extract(i);
+                s.set_delay(((1.0/(*base_freq))/self.per_sample)*(1.0-fret as f64));
+                let trigger = input[j*2+1].extract(i);
+                if trigger > 0.5 {
+                    if !*triggered {
+                        *triggered = true;
+                        s.add_at(10.0, 1.0);
+                    }
+                } else {
+                    *triggered = false;
+                }
+                let mut v = s.next();
+                v = -f.tick(v +diffusion*crossover as f64);
+                s.tick(v);
+            }
         }
         arr![f32x8; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 1.0/rate as f64;
-        self.string_filter = OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), 0.9);
+        for (d,freq,f,_) in &mut self.strings {
+           *f  = OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), 0.99);
+           d.set_delay((1.0/(*freq))/self.per_sample);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct StringBodyFilter {
+    filters: [Biquad; 6],
+}
+
+impl Default for StringBodyFilter {
+    fn default() -> Self {
+        Self {
+            filters: [
+                Biquad::new(1.0,  1.5667, 0.3133, -0.5509, -0.3925),
+                Biquad::new(1.0, -1.9537, 0.9542, -1.6357, 0.8697),
+                Biquad::new(1.0, -1.6683, 0.8852, -1.7674, 0.8735),
+                Biquad::new(1.0, -1.8585, 0.9653, -1.8498, 0.9516),
+                Biquad::new(1.0, -1.9299, 0.9621, -1.9354, 0.9590),
+                Biquad::new(1.0, -1.9800, 0.9888, -1.9867, 0.9923),
+            ],
+        }
+    }
+}
+
+impl Node for StringBodyFilter {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let mut v = input[0].extract(i) as f64;
+            for f in self.filters.iter_mut() {
+                v = f.tick(v);
+            }
+            r = r.replace(i, v as f32);
+        }
+        arr![f32x8; r]
+    }
+}
+
+#[derive(Clone)]
+pub struct PluckedString {
+    line: DelayLine,
+    string_filter: OnePole,
+    triggered: bool,
+    per_sample: f64,
+}
+
+impl Default for PluckedString {
+    fn default() -> Self {
+        Self {
+            line: DelayLine::default(),
+            string_filter: OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9),
+            triggered: false,
+            per_sample: 1.0/44100.0,
+        }
+    }
+}
+
+impl Node for PluckedString {
+    type Input = U3;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let freq = input[0].extract(i);
+            let trigger = input[1].extract(i);
+            let mut slap_threshold = input[2].extract(i);
+            if slap_threshold == 0.0 {
+                slap_threshold = 1.0;
+            }
+            self.line.set_delay((1.0/(freq as f64))/self.per_sample);
+            let pluck = if trigger > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    trigger as f64
+                } else {
+                    0.0
+                }
+            } else {
+                self.triggered = false;
+                0.0
+            };
+            let v = -self.string_filter.tick(self.line.next());
+            self.line.tick(v.min(slap_threshold as f64) + pluck);
+            r = r.replace(i, v as f32);
+        }
+        arr![f32x8; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate as f64;
+        self.string_filter  = OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), 0.99);
+    }
+}
+
+#[derive(Clone)]
+pub struct SympatheticString {
+    line: DelayLine,
+    string_filter: OnePole,
+    per_sample: f64,
+}
+
+impl Default for SympatheticString {
+    fn default() -> Self {
+        Self {
+            line: DelayLine::default(),
+            string_filter: OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9),
+            per_sample: 1.0/44100.0,
+        }
+    }
+}
+
+impl Node for SympatheticString {
+    type Input = U3;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let freq = input[0].extract(i);
+            let driver = input[1].extract(i);
+            self.string_filter.set_gain(input[2].extract(i) as f64);
+            self.line.set_delay((1.0/(freq as f64))/self.per_sample);
+            let v = -self.string_filter.tick(self.line.next());
+            self.line.tick(v + driver as f64);
+            r = r.replace(i, v as f32);
+        }
+        arr![f32x8; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate as f64;
+        self.string_filter  = OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), 0.99);
     }
 }
 
@@ -4125,6 +4316,10 @@ impl OnePole {
         }
     }
 
+    fn set_gain(&mut self, gain: f64) {
+        self.gain = gain;
+    }
+
     fn tick(&mut self, input: f64) -> f64 {
         let output = self.b0 * self.gain * input - self.a1 * self.y1;
         self.y1 = output;
@@ -4145,7 +4340,7 @@ impl DelayLine {
     fn set_delay(&mut self, delay: f64) {
         self.delay = delay;
         if delay as usize > self.line.len() {
-            self.line.resize(self.delay as usize, 0.0);
+            self.line.resize(self.delay as usize * 2, 0.0);
         }
 
         let mut out_index = self.in_index as f64 - delay;
@@ -4153,6 +4348,14 @@ impl DelayLine {
             out_index += self.line.len() as f64;
         }
         self.desired_out_index = out_index;
+    }
+
+    fn add_at(&mut self, amount: f64, position: f64) {
+        let mut index = self.in_index as f64 - self.delay * position;
+        while index < 0.0 {
+            index += self.line.len() as f64;
+        }
+        self.line[index as usize] += amount;
     }
 
     fn tick(&mut self, input: f64) {
@@ -4172,7 +4375,7 @@ impl DelayLine {
     }
 
     fn next(&mut self) -> f64 {
-        self.out_index += 0.9*(self.desired_out_index - self.out_index);
+        self.out_index += 0.1*(self.desired_out_index - self.out_index);
         let alpha = self.out_index.fract();
         let mut out = self.line[self.out_index as usize] * (1.0-alpha);
         out += if self.out_index + 1.0 >= self.line.len() as f64 {

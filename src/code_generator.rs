@@ -227,7 +227,9 @@ fn code_for_node(node_type: String, parameters: Option<NodeParameters>, builder:
         }
         "pattern_sequencer" => {
             if let Some(NodeParameters::PatternSequence(p)) = parameters {
-                format!("PatternSequencer::new({})", p.to_rust())
+                //TODO: Support nested sequencers
+                let mut dummy = HashMap::new();
+                format!("PatternSequencer::new({})", p.as_subsequence(&dummy).unwrap().to_rust())
             } else {
                 panic!();
             }

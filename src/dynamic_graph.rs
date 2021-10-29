@@ -36,6 +36,7 @@ dynamic_nodes!{
         Mul: Mul,
         Div: Div,
         Imp: Impulse::default(),
+        CXor: CXor,
         Comp: Comparator,
         Sine: WaveTable::sine(),
         Psine: WaveTable::positive_sine(),
@@ -77,7 +78,10 @@ dynamic_nodes!{
         ScaleDegreeMajor: DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]),
         ScaleDegreeMinor: DegreeQuantizer::new(&[18.35,20.60,21.83,24.50,27.50,29.14, 32.70]),
         BowedString: BowedString::default(),
-        PluckedString: PluckedString::default()
+        PluckedString: PluckedString::default(),
+        ImaginaryGuitar: ImaginaryGuitar::default(),
+        SympatheticString: SympatheticString::default(),
+        StringBodyFilter: StringBodyFilter::default()
     }
 }
 
@@ -203,74 +207,82 @@ impl DynamicGraphBuilder {
             })
         }
 
-        fn mn_modified_event<'a>() -> Parser<'a, u8, Subsequence> {
+        fn mn_modified_event<'a>() -> Parser<'a, u8, RawSubsequence> {
             (call(mn_raw_event) + one_of(b"*/!") + number()).convert(|((e, o), n)| {
                 match o {
-                    b'*' => Ok(Subsequence::ClockMultiplier(Box::new(e),1.0/n)),
-                    b'/' => Ok(Subsequence::ClockMultiplier(Box::new(e),n)),
-                    b'!' => Ok(Subsequence::ClockMultiplier(Box::new(Subsequence::Tuplet((0..n.max(1.0) as usize).map(|_| e.clone()).collect(), 0)),1.0/n)),
+                    b'*' => Ok(RawSubsequence::ClockMultiplier(Box::new(e),1.0/n)),
+                    b'/' => Ok(RawSubsequence::ClockMultiplier(Box::new(e),n)),
+                    b'!' => Ok(RawSubsequence::ClockMultiplier(Box::new(RawSubsequence::Tuplet((0..n.max(1.0) as usize).map(|_| e.clone()).collect(), 0)),1.0/n)),
                     _ => Err(()),
                 }
             })
         }
 
-        fn mn_raw_event<'a>() -> Parser<'a, u8, Subsequence> {
-            call(mn_bracketed_pattern) | sym(b'~').map(|_| Subsequence::Rest(0.0)) | number().map(|n| Subsequence::Item(n, 0.0))
+        fn mn_raw_event<'a>() -> Parser<'a, u8, RawSubsequence> {
+            call(mn_bracketed_pattern) | sym(b'~').map(|_| RawSubsequence::Rest(0.0)) | number().map(|n| RawSubsequence::Item(n, 0.0))
         }
 
-        fn mn_event<'a>() -> Parser<'a, u8, Subsequence> {
+        fn mn_event<'a>() -> Parser<'a, u8, RawSubsequence> {
             call(mn_modified_event) | call(mn_raw_event)
         }
 
-        fn mn_sequence<'a>() -> Parser<'a, u8, Vec<Subsequence>> {
+        fn mn_sequence<'a>() -> Parser<'a, u8, Vec<RawSubsequence>> {
             list(call(mn_event), sym(b' ').repeat(1..))
         }
 
-        fn mn_repeat<'a>() -> Parser<'a, u8, Subsequence> {
+        fn mn_repeat<'a>() -> Parser<'a, u8, RawSubsequence> {
             (sym(b'[') * whitespace() * call(mn_sequence) - whitespace() - sym(b']'))
             .convert(|s| {
                 if s.is_empty() {
                     Err(())
                 } else {
-                    Ok(Subsequence::Tuplet(s, 0))
+                    Ok(RawSubsequence::Tuplet(s, 0))
                 }
             })
         }
 
-        fn mn_cycle<'a>() -> Parser<'a, u8, Subsequence> {
+        fn mn_cycle<'a>() -> Parser<'a, u8, RawSubsequence> {
             (sym(b'<') * whitespace() * call(mn_sequence) - whitespace() - sym(b'>'))
             .convert(|s| {
                 if s.is_empty() {
                     Err(())
                 } else {
-                    Ok(Subsequence::Iter(s, 0))
+                    Ok(RawSubsequence::Iter(s, 0))
                 }
             })
         }
 
-        fn mn_choice<'a>() -> Parser<'a, u8, Subsequence> {
+        fn mn_choice<'a>() -> Parser<'a, u8, RawSubsequence> {
             (sym(b'|') * whitespace() * call(mn_sequence) - whitespace() - sym(b'|'))
             .convert(|s| {
                 if s.is_empty() {
                     Err(())
                 } else {
-                    Ok(Subsequence::Choice(s, 0))
+                    Ok(RawSubsequence::Choice(s, 0))
                 }
             })
         }
 
-        fn mn_bracketed_pattern<'a>() -> Parser<'a, u8, Subsequence> {
-            call(mn_repeat) | call(mn_cycle) | call(mn_choice)
+        fn mn_nested<'a>() -> Parser<'a, u8, RawSubsequence> {
+            node_name().map(|s| {
+                RawSubsequence::Nested(s)
+            })
+        }
+
+        fn mn_bracketed_pattern<'a>() -> Parser<'a, u8, RawSubsequence> {
+            call(mn_repeat) | call(mn_cycle) | call(mn_choice) | call(mn_nested)
         }
 
         fn sequencer<'a>() -> Parser<'a, u8, Vec<Line>> {
             let name = node_name() - seq(b"=seq");
             let r = name + mn_bracketed_pattern();
             let parameter = sym(b'(') * expression() - sym(b')');
-            let r = r + parameter;
+            let r = r + parameter.opt();
             r.map(|((node_name, sub_sequence), clock)| {
                 let mut edges = Vec::with_capacity(3);
-                edges.extend(clock.as_lines(node_name.clone(), 0));
+                if let Some(clock) = clock {
+                    edges.extend(clock.as_lines(node_name.clone(), 0));
+                }
                 edges.push(Line::Node(node_name, "pattern_sequencer".to_string(), Some(NodeParameters::PatternSequence(sub_sequence))));
                 edges
             })
@@ -688,10 +700,19 @@ impl DynamicGraph {
         let mut definitions = HashMap::new();
         let mut watch_list = HashSet::new();
         let mut input_len = 0;
+        let mut raw_sequencers = HashMap::new();
+
         for l in l {
             match l {
-                Line::Node(k, ty, _) => {
+                Line::Node(k, ty, parameters) => {
                     nodes.insert(k, ty.clone());
+                    if ty == "pattern_sequencer" {
+                        if let Some(NodeParameters::PatternSequence(parameters)) = parameters {
+                            raw_sequencers.insert(k.clone(), parameters.clone());
+                        } else {
+                            panic!();
+                        }
+                    }
                 }
                 Line::BridgeNode(in_node, out_node) => {
                     nodes.insert(in_node, "bridge_in".to_string());
@@ -725,7 +746,7 @@ impl DynamicGraph {
                             },
                             "pattern_sequencer" => {
                                 if let Some(NodeParameters::PatternSequence(parameters)) = parameters {
-                                    let n = PatternSequencer::new(parameters.clone());
+                                    let n = PatternSequencer::new(parameters.as_subsequence(&raw_sequencers).expect("There was a cycle in the sequence definitions!"));
                                     self.add_node(k.clone(), ty.clone(), n);
                                 } else {
                                     panic!();
@@ -813,11 +834,55 @@ impl DynamicGraph {
 }
 #[derive(Clone, Debug)]
 pub enum NodeParameters {
-    PatternSequence(Subsequence),
+    PatternSequence(RawSubsequence),
     Number(f32),
     AutomationSequence(Vec<Interpolation>),
     SumSequence([(u32, f32); 4]),
 }
+#[derive(Clone, Debug)]
+pub enum RawSubsequence {
+    Nested(String),
+    Item(f32, f32),
+    Rest(f32),
+    Tuplet(Vec<RawSubsequence>, usize),
+    Iter(Vec<RawSubsequence>, usize),
+    Choice(Vec<RawSubsequence>, usize),
+    ClockMultiplier(Box<RawSubsequence>, f32),
+}
+
+impl RawSubsequence {
+    pub fn as_subsequence(&self, defs: &HashMap<String, RawSubsequence>) -> Option<Subsequence> {
+        self.as_subsequence_rec(defs, HashSet::new())
+    }
+
+    fn as_subsequence_rec(&self, defs: &HashMap<String, RawSubsequence>, mut seen: HashSet<String>) -> Option<Subsequence> {
+        match self {
+            RawSubsequence::Nested(name) => {
+                if seen.insert(name.clone()) {
+                    defs.get(name).and_then(|s| {
+                        s.as_subsequence_rec(defs, seen.clone()).map(|s| {
+                            let len = s.len();
+                            if len > 1 {
+                                Subsequence::ClockMultiplier(Box::new(s), 1.0/(len as f32))
+                            } else {
+                                s
+                            }
+                        })
+                    })
+                } else {
+                    None
+                }
+            },
+            RawSubsequence::Item(a,b,) => Some(Subsequence::Item(*a,*b)),
+            RawSubsequence::Rest(a) => Some(Subsequence::Rest(*a)),
+            RawSubsequence::Tuplet(a,b) => a.iter().fold(Some(Vec::new()), |v, a| v.and_then(|mut v| a.as_subsequence_rec(defs, seen.clone()).map(|a| {v.push(a); v}))).map(|a| Subsequence::Tuplet(a, *b)),
+            RawSubsequence::Iter(a,b) => a.iter().fold(Some(Vec::new()), |v, a| v.and_then(|mut v| a.as_subsequence_rec(defs, seen.clone()).map(|a| {v.push(a); v}))).map(|a| Subsequence::Iter(a, *b)),
+            RawSubsequence::Choice(a,b) => a.iter().fold(Some(Vec::new()), |v, a| v.and_then(|mut v| a.as_subsequence_rec(defs, seen.clone()).map(|a| {v.push(a); v}))).map(|a| Subsequence::Choice(a, *b)),
+            RawSubsequence::ClockMultiplier(a,b) => a.as_subsequence_rec(defs, seen.clone()).map(|a| Subsequence::ClockMultiplier(Box::new(a),*b)),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Line {
     ExternalParam(String, String),
