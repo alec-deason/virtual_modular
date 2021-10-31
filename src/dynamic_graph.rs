@@ -81,6 +81,8 @@ dynamic_nodes!{
         PluckedString: PluckedString::default(),
         ImaginaryGuitar: ImaginaryGuitar::default(),
         SympatheticString: SympatheticString::default(),
+        WaveMesh: WaveMesh::default(),
+        Flute: Flute::default(),
         StringBodyFilter: StringBodyFilter::default()
     }
 }

@@ -30,5 +30,5 @@ indexmap = "1.6.2"
 cpal = "0.13"
 code_generation_macro = { path = "./code_generation_macro" }
 
-#[profile.release]
-# debug = true
+[profile.release]
+ debug = true

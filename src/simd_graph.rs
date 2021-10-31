@@ -9,7 +9,7 @@ use std::{
     convert::TryFrom,
     sync::{Arc, Mutex},
 };
-use generic_array::{ArrayLength, GenericArray, typenum::{U0, U1, U2, U3, U4, U5, U10, U12}, arr, sequence::{Concat, Split}};
+use generic_array::{ArrayLength, GenericArray, typenum::{U0, U1, U2, U3, U4, U5, U6, U10, U12}, arr, sequence::{Concat, Split}};
 
 pub type Ports<N> = GenericArray<f32x8, N>;
 
@@ -3365,7 +3365,7 @@ impl Subsequence {
         }
     }
 
-    fn current(&mut self, pulse: bool, clock_division: f32) -> (f32, bool, bool, bool, bool) {
+    fn current(&mut self, pulse: bool, clock_division: f32) -> (f32, bool, bool, bool, bool, f32) {
         match self {
             Subsequence::Rest(clock) => {
                 if pulse {
@@ -3377,7 +3377,7 @@ impl Subsequence {
                 } else {
                     false
                 };
-                (0.0, do_tick, false, false, false)
+                (0.0, do_tick, false, false, false, clock_division)
             },
             Subsequence::Item(v, clock) => {
                 if pulse {
@@ -3389,11 +3389,11 @@ impl Subsequence {
                 } else {
                     (false, false, true)
                 };
-                (*v, do_tick, do_trigger, gate, false)
+                (*v, do_tick, do_trigger, gate, false, clock_division)
             },
             Subsequence::Tuplet(sub_sequence, sub_idx) => {
                 let clock_division = clock_division / sub_sequence.len() as f32;
-                let (v, do_tick, do_trigger, gate, _) = sub_sequence[*sub_idx].current(pulse, clock_division);
+                let (v, do_tick, do_trigger, gate, _, len) = sub_sequence[*sub_idx].current(pulse, clock_division);
                 let do_tick = if do_tick {
                     *sub_idx += 1;
                     if *sub_idx >= sub_sequence.len() {
@@ -3405,10 +3405,10 @@ impl Subsequence {
                 } else {
                     false
                 };
-                (v, do_tick, do_trigger, gate, do_tick)
+                (v, do_tick, do_trigger, gate, do_tick, len)
             }
             Subsequence::Iter(sub_sequence, sub_idx) => {
-                let (v, do_tick, do_trigger, gate, _) = sub_sequence[*sub_idx].current(pulse, clock_division);
+                let (v, do_tick, do_trigger, gate, _, len) = sub_sequence[*sub_idx].current(pulse, clock_division);
                 let (do_tick, end_of_cycle) = if do_tick {
                     *sub_idx += 1;
                     let end_of_cycle = if *sub_idx >= sub_sequence.len() {
@@ -3419,20 +3419,22 @@ impl Subsequence {
                 } else {
                     (false, false)
                 };
-                (v, do_tick, do_trigger, gate, end_of_cycle)
+                (v, do_tick, do_trigger, gate, end_of_cycle, len)
             }
             Subsequence::Choice(sub_sequence, sub_idx) => {
-                let (v, do_tick, do_trigger, gate, _) = sub_sequence[*sub_idx].current(pulse, clock_division);
+                let (v, do_tick, do_trigger, gate, _, len) = sub_sequence[*sub_idx].current(pulse, clock_division);
                 let do_tick = if do_tick {
                     *sub_idx = thread_rng().gen_range(0..sub_sequence.len());
                     true
                 } else {
                     false
                 };
-                (v, do_tick, do_trigger, gate, false)
+                (v, do_tick, do_trigger, gate, false, len)
             }
             Subsequence::ClockMultiplier(sub_sequence, mul) => {
-                sub_sequence.current(pulse, clock_division / *mul)
+                let mut r = sub_sequence.current(pulse, clock_division);
+                r.5 *= *mul;
+                r
             }
         }
     }
@@ -3465,13 +3467,14 @@ impl PatternSequencer {
 
 impl Node for PatternSequencer {
     type Input = U1;
-    type Output = U4;
+    type Output = U5;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut r_trig = f32x8::splat(0.0);
         let mut r_gate = f32x8::splat(0.0);
         let mut r_eoc = f32x8::splat(0.0);
         let mut r_value = f32x8::splat(0.0);
+        let mut r_len = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let trigger = input[0].extract(i);
             let mut pulse = false;
@@ -3484,7 +3487,7 @@ impl Node for PatternSequencer {
                 self.triggered = false;
             }
 
-            let (v,_,t,g,eoc) = self.sequence.current(pulse, 24.0 * self.sequence.len() as f32);
+            let (v,_,t,g,eoc,len) = self.sequence.current(pulse, 24.0 * self.sequence.len() as f32);
             if g {
                 r_gate = r_gate.replace(i, 1.0);
             }
@@ -3496,8 +3499,9 @@ impl Node for PatternSequencer {
                 r_eoc = r_eoc.replace(i, 1.0);
             }
             r_value = r_value.replace(i, v);
+            r_len = r_len.replace(i, len/24.0);
         }
-        arr![f32x8; r_value, r_trig, r_gate, r_eoc]
+        arr![f32x8; r_value, r_trig, r_gate, r_eoc, r_len]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -4338,6 +4342,10 @@ struct DelayLine {
 
 impl DelayLine {
     fn set_delay(&mut self, delay: f64) {
+        if self.delay == delay {
+            return
+        }
+
         self.delay = delay;
         if delay as usize > self.line.len() {
             self.line.resize(self.delay as usize * 2, 0.0);
@@ -4384,5 +4392,337 @@ impl DelayLine {
             self.line[self.out_index as usize+ 1]
         } * alpha;
         out
+    }
+}
+
+#[derive(Clone, Default)]
+struct BlockDelayLine {
+    lines: Vec<f64>,
+    width: usize,
+    len: f64,
+    in_index: usize,
+    out_index: f64,
+    output_buffer: Vec<f64>,
+    delay: f64,
+}
+
+impl BlockDelayLine {
+    fn new(width: usize, delay: f64) -> Self {
+        let mut s = Self {
+            lines: vec![0.0; width],
+            len: 1.0,
+            output_buffer: vec![0.0; width],
+            width,
+            in_index: 0,
+            out_index: 0.0,
+            delay: 1.0,
+        };
+        s.set_delay(delay);
+        s
+    }
+
+    fn set_delay(&mut self, delay: f64) {
+        if self.delay == delay {
+            return
+        }
+
+        self.delay = delay;
+        if delay as usize > self.len as usize {
+            self.len = (self.delay.ceil() as usize * 2) as f64;
+            self.lines.resize(self.len as usize * self.width, 0.0);
+        }
+
+        self.out_index = self.in_index as f64 - delay;
+        while self.out_index <= 0.0 {
+            self.out_index += self.len;
+        }
+    }
+
+    fn input_buffer(&mut self) -> &mut [f64] {
+        let i = self.in_index * self.width;
+        &mut self.lines[i .. i+self.width]
+    }
+
+    fn tick(&mut self) {
+        self.in_index += 1;
+        if self.in_index >= self.len as usize {
+            self.in_index = 0;
+        }
+        self.out_index += 1.0;
+        if self.out_index >= self.len {
+            self.out_index = 0.0;
+        }
+    }
+
+    fn next(&mut self) -> &[f64] {
+        let alpha = self.out_index.fract();
+        let i = self.out_index as usize * self.width;
+        self.output_buffer.copy_from_slice(&self.lines[i .. i + self.width]);
+        let other = if self.out_index + 1.0 >= self.len {
+            &self.lines[0 .. self.width]
+        } else {
+            &self.lines[i+self.width..i+self.width*2]
+        };
+        let alpha_p = 1.0-alpha;
+        self.output_buffer.iter_mut().zip(other).for_each(|(b,o)| *b = *b*alpha_p + *o*alpha);
+        &self.output_buffer
+    }
+}
+
+
+#[cfg(test)]
+mod block_delay_tests {
+    use super::*;
+
+    #[test]
+    fn no_interp() {
+        let mut l = BlockDelayLine::new(10, 10.0);
+        println!("{} {} {}", l.len, l.in_index, l.out_index);
+        l.input_buffer().copy_from_slice(&[1.0; 10]);
+        l.tick();
+        assert_eq!(l.next(), &[0.0; 10]);
+        for _ in 0..9 {
+            assert_eq!(l.next(), &[0.0; 10]);
+            l.input_buffer().copy_from_slice(&[0.0; 10]);
+            l.tick();
+        }
+        println!("{:?} {} {} {}", l.lines, l.len, l.in_index, l.out_index);
+        assert_eq!(l.next(), &[1.0; 10]);
+        l.tick();
+        for _ in 0..20 {
+            assert_eq!(l.next(), &[0.0; 10]);
+            l.input_buffer().copy_from_slice(&[0.0; 10]);
+            l.tick();
+        }
+    }
+
+    #[test]
+    fn small_interp() {
+        let mut l = BlockDelayLine::new(10, 10.1);
+        l.input_buffer().copy_from_slice(&[1.0; 10]);
+        println!("{} {} {}", l.len, l.in_index, l.out_index);
+        assert_eq!(l.next(), &[0.0; 10]);
+        l.tick();
+        for _ in 0..9 {
+            assert_eq!(l.next(), &[0.0; 10]);
+            l.input_buffer().copy_from_slice(&[0.0; 10]);
+            l.tick();
+        }
+        println!("{:?} {} {} {}", l.lines, l.len, l.in_index, l.out_index);
+        assert!(l.next().iter().all(|v| (1.0-*v).abs() < 0.2));
+        l.input_buffer().copy_from_slice(&[0.0; 10]);
+        l.tick();
+        for _ in 0..9 {
+            assert_eq!(l.next(), &[0.0; 10]);
+            l.input_buffer().copy_from_slice(&[0.0; 10]);
+            l.tick();
+        }
+        assert_eq!(l.next(), &[0.0; 10]);
+    }
+}
+
+#[derive(Clone)]
+pub struct WaveMesh {
+    lines: BlockDelayLine,
+    junctions: Vec<(Option<OnePole>, Vec<usize>, Vec<usize>)>,
+    lines_buffer: Vec<f64>,
+    sample_rate: f64,
+    gain: f64,
+}
+
+impl Default for WaveMesh {
+    fn default() -> Self {
+        let width = 10i32;
+        let height = 10i32;
+
+        let mut nodes = indexmap::IndexMap::new();
+        let rate = 44100.0;
+        for x in 0..width {
+            nodes.insert((x,-1), (Some(OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), -0.85)),vec![
+                (x, 0)
+            ]));
+            nodes.insert((x,height), (Some(OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), -0.85)),vec![
+                (x, height-1)
+            ]));
+            for y in 0..width {
+                let inputs = vec![
+                    (x-1,y),
+                    (x+1,y),
+                    (x,y-1),
+                    (x,y+1),
+                ];
+                nodes.insert((x,y),(None,inputs));
+            }
+        }
+        for y in 0..width {
+            nodes.insert((-1,y),(Some(OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), -0.85)),vec![
+                (0,y)
+            ]));
+            nodes.insert((width,y),(Some(OnePole::new(0.75 - (0.2 * (rate as f64/2.0) / rate as f64), -0.85)),vec![
+                (width-1,y)
+            ]));
+        }
+        let mut lines_map = indexmap::IndexMap::new();
+        let mut lines = 0;
+        let mut junctions = Vec::new();
+        for (src, (reflective, ns)) in nodes {
+            let mut inputs = Vec::new();
+            let mut outputs = Vec::new();
+            for dst in ns {
+                let input = *lines_map.entry((src,dst)).or_insert_with(|| {
+                    lines += 1;
+                    lines - 1
+                });
+                inputs.push(input);
+                let output = *lines_map.entry((dst,src)).or_insert_with(|| {
+                    let mut d = DelayLine::default();
+                    lines += 1;
+                    lines - 1
+                });
+                outputs.push(output);
+            }
+            junctions.push((reflective, inputs, outputs));
+        }
+
+        Self {
+            lines_buffer: vec![0.0; lines],
+            lines: BlockDelayLine::new(lines, 100.0),
+            junctions,
+            sample_rate: 44100.0,
+            gain: 0.85,
+        }
+    }
+}
+
+impl Node for WaveMesh {
+    type Input = U3;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let gain = input[1].extract(i) as f64;
+            if gain != self.gain {
+                for (f,_,_) in &mut self.junctions {
+                    if let Some(f) = f {
+                        f.set_gain(gain);
+                    }
+                }
+            }
+            let line_len = input[2].extract(i) as f64 * self.sample_rate * (10.0/self.lines.len);
+            self.lines.set_delay(line_len);
+            {
+                let Self { junctions, lines_buffer, lines, .. } = self;
+                let v = lines.next();
+                for (reflective, in_edges, out_edges) in junctions {
+                    let mut b = 0.0;
+                    for (e,o) in in_edges.iter().zip(out_edges.iter()) {
+                        let v = v[*e];
+                        if reflective.is_none() {
+                            lines_buffer[*o] = -v;
+                            b += v;
+                        } else {
+                            lines_buffer[*o] = 0.0;
+                            b -= v;
+                        }
+                    }
+                    if let Some(f) = reflective {
+                        b = f.tick(b);
+                    } else {
+                        b *= 0.5;
+                    }
+                    for o in out_edges {
+                        lines_buffer[*o] += b;
+                    }
+                }
+            }
+            let trigger = input[0].extract(i) as f64 / self.lines.width as f64;
+            let input_idx = self.lines.width / 2;
+            r = r.replace(i, self.lines_buffer[0] as f32);
+            {
+                let Self { lines_buffer, lines, .. } = self;
+                let b = lines.input_buffer();
+                b.copy_from_slice(&lines_buffer);
+                b.iter_mut().for_each(|b| *b += trigger);
+                //b[input_idx] += trigger as f64;
+                lines.tick();
+            }
+        }
+        arr![f32x8; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.sample_rate = rate as f64;
+        for (f,_,_) in &mut self.junctions {
+            if let Some(f) = f {
+                *f = OnePole::new(0.75 - (0.2 * 22050.0 / rate as f64), 0.8);
+            }
+        }
+    }
+}
+
+// Based on: https://ccrma.stanford.edu/software/clm/compmus/clm-tutorials/pm.html#s-f
+#[derive(Clone)]
+pub struct Flute {
+    embouchure: DelayLine,
+    body: DelayLine,
+    y2: f64,
+    y1: f64,
+    rng: rand::rngs::StdRng,
+    sample_rate: f64,
+}
+
+impl Default for Flute {
+    fn default() -> Self {
+        Self {
+            embouchure: DelayLine::default(),
+            body: DelayLine::default(),
+            y1: 0.0,
+            y2: 0.0,
+            rng: rand::rngs::StdRng::from_rng(thread_rng()).unwrap(),
+            sample_rate: 44100.0,
+        }
+    }
+}
+
+impl Node for Flute {
+    type Input = U6;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0];
+        let flow = input[1];
+        let noise_amount = input[2];
+        let feedback_1 = input[3];
+        let feedback_2 = input[4];
+        let lowpass_cutoff = input[5];
+
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let freq = freq.extract(i) as f64;
+            self.body.set_delay((1.0/freq)*self.sample_rate);
+            self.embouchure.set_delay((1.0/freq)*self.sample_rate*0.5);
+            let flow = flow.extract(i) as f64;
+            let n = (self.rng.gen_range(-1.0..1.0) + self.y2) * 0.5;
+            self.y2 = n;
+            let excitation = n * flow * noise_amount.extract(i) as f64 + flow;
+            let body_out = self.body.next();
+            let embouchure_out = self.embouchure.next();
+            let embouchure_out = embouchure_out - embouchure_out.powi(3);
+
+            self.embouchure.tick(body_out * feedback_1.extract(i) as f64 + excitation);
+            let body_in = embouchure_out + body_out * feedback_2.extract(i) as f64;
+            let a = lowpass_cutoff.extract(i) as f64;
+            let body_in = a * body_in + (1.0 - a) * self.y1;
+            self.y1 = body_in;
+            self.body.tick(body_in);
+
+            r = r.replace(i, body_out as f32);
+        }
+        arr![f32x8; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.sample_rate = rate as f64;
     }
 }
