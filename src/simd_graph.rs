@@ -9,7 +9,7 @@ use std::{
     convert::TryFrom,
     sync::{Arc, Mutex},
 };
-use generic_array::{ArrayLength, GenericArray, typenum::{U0, U1, U2, U3, U4, U5, U6, U10, U12}, arr, sequence::{Concat, Split}};
+use generic_array::{ArrayLength, GenericArray, typenum::*, arr, sequence::{Concat, Split}};
 
 pub type Ports<N> = GenericArray<f32x8, N>;
 
@@ -3333,6 +3333,34 @@ impl Node for DegreeQuantizer {
     }
 }
 
+#[derive(Clone)]
+pub struct TritaveDegreeQuantizer {
+    values: Vec<f32>,
+}
+
+impl TritaveDegreeQuantizer {
+    pub fn new(values: &[f32]) -> Self {
+        Self {
+            values: values.to_vec()
+        }
+    }
+}
+
+impl Node for TritaveDegreeQuantizer {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let input = input[0].max_element();
+        let degree = (input + self.values.len() as f32 * 2.0).max(0.0).round() as usize;
+
+        let octave = degree / self.values.len();
+        let idx = degree % self.values.len();
+
+        arr![f32x8; f32x8::splat(self.values[idx]*3.0f32.powi(octave as i32))]
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Subsequence {
     Item(f32, f32),
@@ -3365,7 +3393,7 @@ impl Subsequence {
         }
     }
 
-    fn current(&mut self, pulse: bool, clock_division: f32) -> (f32, bool, bool, bool, bool, f32) {
+    fn current(&mut self, pulse: bool, clock_division: f32) -> (Option<f32>, bool, bool, bool, bool, f32) {
         match self {
             Subsequence::Rest(clock) => {
                 if pulse {
@@ -3377,7 +3405,7 @@ impl Subsequence {
                 } else {
                     false
                 };
-                (0.0, do_tick, false, false, false, clock_division)
+                (None, do_tick, false, false, false, clock_division)
             },
             Subsequence::Item(v, clock) => {
                 if pulse {
@@ -3389,7 +3417,7 @@ impl Subsequence {
                 } else {
                     (false, false, true)
                 };
-                (*v, do_tick, do_trigger, gate, false, clock_division)
+                (Some(*v), do_tick, do_trigger, gate, false, clock_division)
             },
             Subsequence::Tuplet(sub_sequence, sub_idx) => {
                 let clock_division = clock_division / sub_sequence.len() as f32;
@@ -3453,6 +3481,7 @@ pub struct PatternSequencer {
     sequence: Subsequence,
     per_sample: f32,
     triggered: bool,
+    previous_value: f32,
 }
 
 impl PatternSequencer {
@@ -3461,6 +3490,7 @@ impl PatternSequencer {
             sequence,
             per_sample: 0.0,
             triggered: false,
+            previous_value: 0.0,
         }
     }
 }
@@ -3498,7 +3528,8 @@ impl Node for PatternSequencer {
             if eoc {
                 r_eoc = r_eoc.replace(i, 1.0);
             }
-            r_value = r_value.replace(i, v);
+            self.previous_value = v.unwrap_or(self.previous_value);
+            r_value = r_value.replace(i, self.previous_value);
             r_len = r_len.replace(i, len/24.0);
         }
         arr![f32x8; r_value, r_trig, r_gate, r_eoc, r_len]
@@ -4686,7 +4717,7 @@ impl Default for Flute {
 }
 
 impl Node for Flute {
-    type Input = U6;
+    type Input = U7;
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
@@ -4696,12 +4727,13 @@ impl Node for Flute {
         let feedback_1 = input[3];
         let feedback_2 = input[4];
         let lowpass_cutoff = input[5];
+        let embouchure_ratio = input[6];
 
         let mut r = f32x8::splat(0.0);
         for i in 0..f32x8::lanes() {
             let freq = freq.extract(i) as f64;
             self.body.set_delay((1.0/freq)*self.sample_rate);
-            self.embouchure.set_delay((1.0/freq)*self.sample_rate*0.5);
+            self.embouchure.set_delay((1.0/freq)*self.sample_rate*embouchure_ratio.extract(i) as f64);
             let flow = flow.extract(i) as f64;
             let n = (self.rng.gen_range(-1.0..1.0) + self.y2) * 0.5;
             self.y2 = n;

@@ -65,6 +65,7 @@ fn main() {
                          for event in events {
                             let data = [event.message.status, event.message.data1, event.message.data2, event.message.data3];
                             let message = wmidi::MidiMessage::try_from(&data[..]).unwrap();
+                            println!("{:?}", message);
                             match message {
                                 wmidi::MidiMessage::NoteOn(c,n,v) => {
                                     if c.index() == 0 {
