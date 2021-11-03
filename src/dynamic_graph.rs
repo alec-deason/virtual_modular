@@ -147,14 +147,21 @@ impl DynamicGraphBuilder {
             term.name("term")
         }
 
+        fn operator_expression<'a>(operations: &'a [u8], mut next_level: impl FnMut() -> Parser<'a, u8, Expression>) -> Parser<'a, u8, Expression> {
+            (next_level() + (whitespace() * one_of(operations) - whitespace() + next_level()).repeat(0..)).convert::<_,&'static str,_>(|(mut a, tail)| {
+                if tail.is_empty() {
+                    Ok(a)
+                } else {
+                    //Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))
+                    for (o, b) in tail {
+                        a = Expression::Operation(Box::new(a), str::from_utf8(&[o]).unwrap().try_into()?, Box::new(b));
+                    }
+                    Ok(a)
+                }
+            })
+        }
         fn expression<'a>() -> Parser<'a, u8, Expression> {
-            let addition = (call(term) - whitespace() + sym(b'+').repeat(1).collect().convert(str::from_utf8) - whitespace() + call(expression)).name("addition");
-            let subtraction = call(term) - whitespace() + sym(b'-').repeat(1).collect().convert(str::from_utf8) - whitespace() + call(expression);
-            let multiplication = (call(term) - whitespace() + sym(b'*').repeat(1).collect().convert(str::from_utf8) - whitespace() + call(expression)).name("multiplication");
-            let division = call(term) - whitespace() + sym(b'/').repeat(1).collect().convert(str::from_utf8) - whitespace() + call(expression);
-
-            let operation = (multiplication | division | addition | subtraction).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term);
-            (operation | call(term)).name("expression")
+            operator_expression(b"+-", || operator_expression(b"*/", || call(term)))
         }
 
         fn number<'a>() -> Parser<'a, u8, f32> {

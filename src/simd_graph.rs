@@ -4463,7 +4463,11 @@ impl BlockDelayLine {
         s
     }
 
-    fn set_delay(&mut self, delay: f64) {
+    fn set_delay(&mut self, mut delay: f64) {
+        if !delay.is_finite() {
+            delay = 1.0;
+        }
+        delay = delay.max(1.0).min(44100.0*1.0);
         if self.delay == delay {
             return
         }

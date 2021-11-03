@@ -35,7 +35,7 @@ fn main() {
 
         let mut voices = std::collections::HashMap::new();
         for c in 0..10 {
-            voices.insert(c, (0..8).map(|i| (i, None)).collect::<Vec<_>>());
+            voices.insert(c, (0..4).map(|i| (i, None)).collect::<Vec<_>>());
         }
         let mut current_voice = 0;
 
