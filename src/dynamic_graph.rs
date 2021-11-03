@@ -21,7 +21,6 @@ macro_rules! dynamic_nodes {
         macro_rules! $loader_name {
             ($builder:expr) => {
                 $(
-                    println!("{}", stringify!($name));
                     $builder.templates.insert(stringify!($name).to_string(), (BoxedDynamicNode::new($constructor), stringify!($constructor).to_string()));
                 )*
             }
@@ -84,6 +83,7 @@ dynamic_nodes!{
         SympatheticString: SympatheticString::default(),
         WaveMesh: WaveMesh::default(),
         Flute: Flute::default(),
+        StereoIdentity: StereoIdentity,
         StringBodyFilter: StringBodyFilter::default()
     }
 }
@@ -119,13 +119,13 @@ impl DynamicGraphBuilder {
 
         fn node_name<'a>() -> Parser<'a, u8, String> {
             let number = one_of(b"0123456789");
-            (one_of(b"abcdefghijklmnopqrstuvwxyzxy").repeat(1) + (one_of(b"abcdefghijklmnopqrstuvwxyzxy")| number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
+            (one_of(b"abcdefghijklmnopqrstuvwxyzxy").repeat(1) + (one_of(b"abcdefghijklmnopqrstuvwxyzxy")| number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string()).name("node_name")
         }
         fn node_constructor_name<'a>() -> Parser<'a, u8, String> {
             let lowercase = one_of(b"abcdefghijklmnopqrstuvwxyzxy");
             let uppercase = one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ");
             let number = one_of(b"0123456789");
-            (uppercase.repeat(1) + (lowercase | one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ") | number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string())
+            (uppercase.repeat(1) + (lowercase | one_of(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ") | number | sym(b'_')).repeat(0..)).collect().convert(str::from_utf8).map(|s| s.to_string()).name("node_constructor_name")
         }
 
         fn constructor_call<'a>() -> Parser<'a, u8, Expression> {
@@ -135,31 +135,26 @@ impl DynamicGraphBuilder {
 
             r.map(|(constructor_name, parameters)| {
                 Expression::Term(Term::NodeConstructor(constructor_name, parameters))
-            })
+            }).name("constructor_call")
         }
 
         fn term<'a>() -> Parser<'a, u8, Expression> {
-            let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
-            let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
-            let number = sym(b'-').opt() + integer + frac.opt();
-            let number = number
-                .collect()
-                .map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<f32>().unwrap())
-                .map(|n| Expression::Term(Term::Number(n)));
             let port_number = one_of(b"0123456789").repeat(1..).collect().map(|cs| String::from_utf8(cs.to_vec()).unwrap().parse::<usize>().unwrap());
             let node_reference = (node_name() + (sym(b'|') * port_number).opt()).map(|(node, c)| Expression::Term(Term::Node(node, c.unwrap_or(0))));
             let constructor = constructor_call();
-            let term = number | node_reference | constructor;
-            term
+            let grouped_expression = sym(b'(') * call(expression) - sym(b')');
+            let term = number().map(|n| Expression::Term(Term::Number(n))) | node_reference | constructor | grouped_expression;
+            term.name("term")
         }
-        fn grouped_expression<'a>() -> Parser<'a, u8, Expression> {
-            call(term) | (sym(b'(') * call(expression) - sym(b')'))
-        }
-        fn expression<'a>() -> Parser<'a, u8, Expression> {
-            let operator = one_of(b"+-*/").repeat(1).collect().convert(str::from_utf8);
 
-            let r = (call(grouped_expression) - whitespace() + operator - whitespace() + call(grouped_expression)).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term);
-            r
+        fn expression<'a>() -> Parser<'a, u8, Expression> {
+            let addition = (call(term) - whitespace() + sym(b'+').repeat(1).collect().convert(str::from_utf8) - whitespace() + call(expression)).name("addition");
+            let subtraction = call(term) - whitespace() + sym(b'-').repeat(1).collect().convert(str::from_utf8) - whitespace() + call(expression);
+            let multiplication = (call(term) - whitespace() + sym(b'*').repeat(1).collect().convert(str::from_utf8) - whitespace() + call(expression)).name("multiplication");
+            let division = call(term) - whitespace() + sym(b'/').repeat(1).collect().convert(str::from_utf8) - whitespace() + call(expression);
+
+            let operation = (multiplication | division | addition | subtraction).convert::<_,&'static str,_>(|((a, o), b)| Ok(Expression::Operation(Box::new(a), o.try_into()?, Box::new(b)))) | call(term);
+            (operation | call(term)).name("expression")
         }
 
         fn number<'a>() -> Parser<'a, u8, f32> {
@@ -171,6 +166,7 @@ impl DynamicGraphBuilder {
                 .collect()
                 .convert(str::from_utf8)
                 .convert(f32::from_str)
+                .name("number")
         }
 
         fn interpolation<'a>() -> Parser<'a, u8, Interpolation> {
@@ -310,8 +306,34 @@ impl DynamicGraphBuilder {
                 ]
             })
         }
+        fn poly_voice<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let block = node_name()-whitespace()-sym(b'=')-whitespace()-seq(b"poly<")+number()-whitespace()-sym(b',')-whitespace()+number()-whitespace()-seq(b"{\n")+call(synth)-whitespace()-sym(b'\n').repeat(0..)-sym(b'}')-whitespace()-sym(b'>');
+                block.map(|(((name, channel), voices), voice_def)| {
+                    let mut lines = vec![
+                        Line::Node(name.clone(), "StereoIdentity".to_string(), None),
+                    ];
+                    for i in 0..voices as usize {
+                        let input_freq=format!("midi_{}_voice_{}_freq", channel as i32, i);
+                        let input_freq_node = uuid::Uuid::new_v4().to_string();
+                        lines.push(Line::ExternalParam(input_freq_node.clone(), input_freq));
+                        let input_velocity=format!("midi_{}_voice_{}_velocity", channel as i32, i);
+                        let input_velocity_node = uuid::Uuid::new_v4().to_string();
+                        lines.push(Line::ExternalParam(input_velocity_node.clone(), input_velocity));
+                        let prefix = uuid::Uuid::new_v4().to_string();
+                        lines.extend(voice_def.iter().map(|l| {
+                            let l = l.clone_with_prefix(&prefix);
+                            let l = l.replace_node_name(&format!("{}output", prefix), &name);
+                            let l = l.replace_node_name(&format!("{}freq_in", prefix), &input_freq_node);
+                            let l = l.replace_node_name(&format!("{}velocity_in", prefix), &input_velocity_node);
+                            l
+                        }));
+                    }
+                    lines
+                })
+        }
+
         fn synth<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let p = (comment() | bridge() | external_parameter() | sequencer() | sumseq() | node_definition() | automate() | edge() | node()).repeat(1..);
+            let p = (comment() | poly_voice() | bridge() | external_parameter() | sequencer() | sumseq() | node_definition() | automate() | edge() | node()).repeat(1..);
             p.map(|ls| ls.into_iter().flatten().collect())
         }
         fn node_definition<'a>() -> Parser<'a, u8, Vec<Line>> {
@@ -339,7 +361,7 @@ impl DynamicGraphBuilder {
                         edges
                     }
                 }
-            })
+            }).name("node")
         }
         //fn include<'a>() -> Parser<'a, u8, Vec<Line>> {
         //    let p = seq(b"include(") * none_of(b"\n=(),").repeat(1..).convert(String::from_utf8) - sym(b')') - whitespace() - sym(b'\n');
@@ -349,19 +371,20 @@ impl DynamicGraphBuilder {
         //    })
         //}
         fn whitespace<'a>() -> Parser<'a, u8, Vec<u8>> {
-            sym(b' ').repeat(0..)
+            sym(b' ').repeat(0..).name("whitespace")
         }
         fn edge<'a>() -> Parser<'a, u8, Vec<Line>> {
             let p = sym(b'(') * whitespace() *
-                none_of(b"),").repeat(1..).convert(String::from_utf8) - whitespace() - sym(b',') - whitespace() +
+                node_name() - whitespace() - sym(b',') - whitespace() +
                 one_of(b"0123456789").repeat(1..).convert(String::from_utf8).convert(|s|u32::from_str(&s)) - whitespace() - sym(b',') - whitespace() +
                 expression()
                 - whitespace() - sym(b')') - whitespace() - sym(b'\n');
             p.map(|((dst, i), e)| {
                 e.as_lines(dst, i as usize)
-            })
+            }).name("edge")
         }
-        synth().parse(data.as_bytes()).map_err(|e| format!("{:?}", e))
+        let parsed = synth().parse(data.as_bytes()).map_err(|e| format!("{:?}", e));
+        parsed
     }
 }
 
@@ -593,7 +616,13 @@ impl DynamicGraph {
     pub fn process(&mut self) -> Ports<U2> {
         if let Ok(mut ei) = self.external_inputs.lock() {
             for (k, v) in self.external_input_nodes.values_mut() {
-                if let Some(nv) = ei.get_mut(k).and_then(|v| v.pop()) {
+                if let Some(nv) = ei.get_mut(k).and_then(|v| {
+                    if !v.is_empty() {
+                        Some(v.remove(0))
+                    } else {
+                        None
+                    }
+                }) {
                     *v = nv;
                 }
             }
@@ -895,6 +924,91 @@ pub enum Line {
     Edge(String, u32, String, u32),
     Include(String),
     Comment,
+}
+
+impl Line {
+    fn clone_with_prefix(&self, prefix: &str) -> Line {
+        match self {
+            Line::ExternalParam(name, target) => Line::ExternalParam(format!("{}{}", prefix, name), target.clone()),
+            Line::Node(name, ty, params) => {
+                Line::Node(format!("{}{}", prefix, name), ty.clone(), params.clone())
+            },
+            Line::BridgeNode(name_in, name_out) => {
+                Line::BridgeNode(format!("{}{}", prefix, name_in), format!("{}{}", prefix, name_out))
+            },
+            Line::NodeDefinition(name, inner) => {
+                let prefixed_inner: Vec<Line> = inner.iter().map(|l| l.clone_with_prefix(prefix)).collect();
+                Line::NodeDefinition(format!("{}{}", prefix, name), prefixed_inner)
+            },
+            Line::Edge(name_in, port_in, name_out, port_out) => {
+                Line::Edge(format!("{}{}", prefix, name_in), *port_in, format!("{}{}", prefix, name_out), *port_out)
+            },
+            Line::Include(path) => {
+                Line::Include(path.clone())
+            },
+            Line::Comment => Line::Comment
+        }
+    }
+
+    fn replace_node_name(&self, old: &str, new: &str) -> Line {
+        match self {
+            Line::ExternalParam(name, target) => {
+                let name = if name == old {
+                    new.to_string()
+                } else {
+                    name.clone()
+                };
+                Line::ExternalParam(name, target.clone())
+            },
+            Line::Node(name, ty, params) => {
+                let name = if name == old {
+                    new.to_string()
+                } else {
+                    name.clone()
+                };
+                Line::Node(name, ty.clone(), params.clone())
+            },
+            Line::BridgeNode(name_in, name_out) => {
+                let name_in = if name_in == old {
+                    new.to_string()
+                } else {
+                    name_in.clone()
+                };
+                let name_out = if name_out == old {
+                    new.to_string()
+                } else {
+                    name_out.clone()
+                };
+                Line::BridgeNode(name_in, name_out)
+            },
+            Line::NodeDefinition(name, inner) => {
+                let name = if name == old {
+                    new.to_string()
+                } else {
+                    name.clone()
+                };
+                let new_inner: Vec<Line> = inner.iter().map(|l| l.replace_node_name(old, new)).collect();
+                Line::NodeDefinition(name, new_inner)
+            },
+            Line::Edge(name_in, port_in, name_out, port_out) => {
+                let name_in = if name_in == old {
+                    new.to_string()
+                } else {
+                    name_in.clone()
+                };
+                let name_out = if name_out == old {
+                    new.to_string()
+                } else {
+                    name_out.clone()
+                };
+                Line::Edge(name_in, *port_in, name_out, *port_out)
+            },
+            Line::Include(path) => {
+                Line::Include(path.clone())
+            },
+            Line::Comment => Line::Comment
+        }
+    }
 }
 
 impl Node for DynamicGraph {

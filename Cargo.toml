@@ -25,9 +25,10 @@ ringbuf = "0.2.5"
 typenum = "1.13.0"
 generic-array = "0.14.4"
 indexmap = "1.6.2"
+jack = "0.7.1"
 
 [dev-dependencies]
-cpal = {"0.13", features=["jack"]}
+cpal = {version="0.13", features=["jack"]}
 code_generation_macro = { path = "./code_generation_macro" }
 
 [profile.release]

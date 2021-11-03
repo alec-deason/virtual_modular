@@ -33,42 +33,55 @@ fn main() {
         use std::time::Duration;
         let timeout = Duration::from_millis(10);
 
-        let mut voices:Vec<_> = (0..4).map(|i| (i, None)).collect();
+        let mut voices = std::collections::HashMap::new();
+        for c in 0..10 {
+            voices.insert(c, (0..8).map(|i| (i, None)).collect::<Vec<_>>());
+        }
         let mut current_voice = 0;
 
-        let info = context.device(1).unwrap();
+        //let info = context.device(1).unwrap();
+        /*
         let in_ports = context
              .devices()
              .unwrap()
              .into_iter()
              .filter_map(|dev| context.input_port(dev, 1024).ok())
              .collect::<Vec<_>>();
-         loop {
+         */
+         //println!("{:?}", context.devices());
+         //let mut in_ports = vec![context.default_input_port(1024).unwrap()];
+         let (client, _status) =
+             jack::Client::new("rust_jack_show_midi", jack::ClientOptions::NO_START_SERVER).unwrap();
+         let shower = client
+            .register_port("rust_midi_shower", jack::MidiIn::default())
+            .unwrap();
+         let cback = move |_: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
             {
                 let mut inputs = inputs.lock().unwrap();
-                while let Some(Event { id, event, time }) = gilrs.next_event() {
-                    match event {
-                        EventType::AxisChanged(a, v, ..) => {
-                            inputs.entry(format!("pad_{:?}", a)).or_insert_with(Vec::new).push(v);
-                        }
-                        EventType::ButtonPressed(b, ..) => {
-                            inputs.entry(format!("pad_{:?}", b)).or_insert_with(Vec::new).push(1.0);
-                        }
-                        EventType::ButtonReleased(b, ..) => {
-                            inputs.entry(format!("pad_{:?}", b)).or_insert_with(Vec::new).push(0.0);
-                        }
-                        _ => ()
-                    }
-                }
-                 for port in &in_ports {
-                     if let Ok(Some(events)) = port.read_n(1024) {
-                         for event in events {
-                            let data = [event.message.status, event.message.data1, event.message.data2, event.message.data3];
-                            let message = wmidi::MidiMessage::try_from(&data[..]).unwrap();
-                            println!("{:?}", message);
+                //while let Some(Event { id, event, time }) = gilrs.next_event() {
+                //    match event {
+                //        EventType::AxisChanged(a, v, ..) => {
+                //            inputs.entry(format!("pad_{:?}", a)).or_insert_with(Vec::new).push(v);
+                //        }
+                //        EventType::ButtonPressed(b, ..) => {
+                //            inputs.entry(format!("pad_{:?}", b)).or_insert_with(Vec::new).push(1.0);
+                //        }
+                //        EventType::ButtonReleased(b, ..) => {
+                //            inputs.entry(format!("pad_{:?}", b)).or_insert_with(Vec::new).push(0.0);
+                //        }
+                //        _ => ()
+                //    }
+                //}
+                 //for port in &mut in_ports {
+                     ///if let Ok(_) = port.poll() {
+                     //port.poll();
+                        // while let Ok(Some(event)) = port.read() {
+                        for e in shower.iter(ps) {
+                            //let data = [event.message.status, event.message.data1, event.message.data2, event.message.data3];
+                            let message = wmidi::MidiMessage::try_from(e.bytes).unwrap();
                             match message {
                                 wmidi::MidiMessage::NoteOn(c,n,v) => {
-                                    if c.index() == 0 {
+                                    if let Some(voices) = voices.get_mut(&c.index()) {
                                         let mut consumed = None;
                                         let mut aval = None;
                                         for (i, (j,f)) in voices.iter_mut().enumerate() {
@@ -79,36 +92,48 @@ fn main() {
                                                 aval = Some((i, *j));
                                             }
                                         }
+                                        let velocity = u8::try_from(v).unwrap();
                                         if let Some(i) = consumed {
-                                            inputs.entry(format!("midi_voice_{}_velocity", i)).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
+                                            inputs.entry(format!("midi_{}_voice_{}_velocity", c.index(), i)).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
                                         } else {
+                                            let mut smash = false;
                                             let (aval, voice) = if let Some((aval, voice)) = aval {
                                                 (aval, voice)
                                             } else {
+                                                smash = true;
                                                 (0, voices[0].0)
                                             };
-                                            inputs.entry(format!("midi_voice_{}_freq", voice)).or_insert_with(Vec::new).push(n.to_freq_f32());
-                                            inputs.entry(format!("midi_voice_{}_velocity", voice)).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
-                                            voices.remove(aval);
-                                            voices.insert(0, (voice, Some(n)));
-                                            voices.rotate_left(1);
+                                            inputs.entry(format!("midi_{}_voice_{}_freq", c.index(), voice)).or_insert_with(Vec::new).push(n.to_freq_f32());
+                                            inputs.entry(format!("midi_{}_voice_{}_velocity", c.index(), voice)).or_insert_with(Vec::new).push(velocity as f32 / 127.0);
+                                            if velocity > 0 {
+                                                voices.remove(aval);
+                                                voices.insert(0, (voice, Some(n)));
+                                                voices.rotate_left(1);
+                                            } else {
+                                                for (i, (j, f)) in voices.iter_mut().enumerate() {
+                                                    if Some(n) == *f {
+                                                        *f = None;
+                                                        inputs.entry(format!("midi_{}_voice_{}_velocity", c.index(), j)).or_insert_with(Vec::new).push(0.0);
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     if u8::try_from(n).unwrap() != current_voice {
                                         current_voice = u8::try_from(n).unwrap();
                                         inputs.entry(format!("midi_mono_{}_freq", c.index())).or_insert_with(Vec::new).push(n.to_freq_f32());
-                                        inputs.entry(format!("midi_mono_{}_velocity", c.index())).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
                                         inputs.entry(format!("midi_mono_{}_velocity", c.index())).or_insert_with(Vec::new).push(0.0);
+                                        inputs.entry(format!("midi_mono_{}_velocity", c.index())).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
                                     }
                                     inputs.entry(format!("midi_{}_freq", c.index())).or_insert_with(Vec::new).push(n.to_freq_f32());
                                     inputs.entry(format!("midi_{}_velocity", c.index())).or_insert_with(Vec::new).push(u8::try_from(v).unwrap() as f32 / 127.0);
                                 }
                                 wmidi::MidiMessage::NoteOff(c,n,v) => {
-                                    if c.index() == 0 {
+                                    if let Some(voices) = voices.get_mut(&c.index()) {
                                         for (i, (j, f)) in voices.iter_mut().enumerate() {
                                             if Some(n) == *f {
                                                 *f = None;
-                                                inputs.entry(format!("midi_voice_{}_velocity", j)).or_insert_with(Vec::new).push(0.0);
+                                                inputs.entry(format!("midi_{}_voice_{}_velocity", c.index(), j)).or_insert_with(Vec::new).push(0.0);
                                             }
                                         }
                                     }
@@ -135,10 +160,14 @@ fn main() {
                             }
                          }
                      }
-                 }
-            }
-              std::thread::sleep(timeout);
-         }
+                     jack::Control::Continue
+         };
+         let active_client = client
+                     .activate_async((), jack::ClosureProcessHandler::new(cback))
+                             .unwrap();
+                         loop {
+                             std::thread::sleep(std::time::Duration::new(10,0));
+                         }
     });
 
     let reload_data = Arc::clone(&graph.reload_data);

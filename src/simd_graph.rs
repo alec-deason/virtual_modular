@@ -3258,6 +3258,17 @@ impl Node for Identity {
 }
 
 #[derive(Clone)]
+pub struct StereoIdentity;
+impl Node for StereoIdentity {
+    type Input = U2;
+    type Output = U2;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        input
+    }
+}
+
+#[derive(Clone)]
 pub struct Inputs;
 impl Node for Inputs {
     type Input = U10;
