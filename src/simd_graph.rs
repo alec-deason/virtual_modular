@@ -4448,6 +4448,7 @@ struct DelayLine {
 
 impl DelayLine {
     fn set_delay(&mut self, delay: f64) {
+        let delay = delay.max(1.0);
         if self.delay == delay {
             return
         }
@@ -4489,7 +4490,7 @@ impl DelayLine {
     }
 
     fn next(&mut self) -> f64 {
-        self.out_index += 0.1*(self.desired_out_index - self.out_index);
+        self.out_index += 0.9*(self.desired_out_index - self.out_index);
         let alpha = self.out_index.fract();
         let mut out = self.line[self.out_index as usize] * (1.0-alpha);
         out += if self.out_index + 1.0 >= self.line.len() as f64 {
