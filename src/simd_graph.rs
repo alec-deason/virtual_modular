@@ -822,7 +822,7 @@ impl WaveTable {
     }
 
     pub fn sine() -> Self {
-        let sz = 1024; // the size of the table
+        let sz = 4096; // the size of the table
         let mut table = vec![0.0; sz];
         for i in 0..sz {
             let x = ((i as f32 / sz as f32) * std::f32::consts::PI * 2.0).sin();
@@ -928,6 +928,47 @@ impl Node for WaveTable {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate;
+    }
+}
+
+#[derive(Clone)]
+pub struct Sine {
+    phase: f64,
+    per_sample: f64
+}
+
+impl Default for Sine {
+    fn default() -> Self {
+        Self {
+            phase: thread_rng().gen(),
+            per_sample: 1.0/44100.0,
+        }
+    }
+}
+
+impl Node for Sine {
+    type Input = U1;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let input = input[0];
+
+        let mut r = f32x8::splat(0.0);
+        for i in 0..f32x8::lanes() {
+            let v = (TAU as f64 * self.phase).sin();
+            self.phase += self.per_sample * input.extract(i) as f64;
+            if self.phase > 1.0 {
+                self.phase -= 1.0;
+            }
+            r = r.replace(i, v as f32);
+        }
+
+        arr![f32x8; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate as f64;
     }
 }
 /*
@@ -3327,6 +3368,14 @@ impl DegreeQuantizer {
             values: values.to_vec()
         }
     }
+
+    pub fn chromatic() -> Self {
+        let mut notes = Vec::with_capacity(12);
+        for i in 0..12 {
+            notes.push(16.35*2.0f32.powf((i * 100) as f32/1200.0));
+        }
+        Self::new(&notes)
+    }
 }
 
 impl Node for DegreeQuantizer {
@@ -3471,7 +3520,7 @@ impl Subsequence {
                 (v, do_tick, do_trigger, gate, false, len)
             }
             Subsequence::ClockMultiplier(sub_sequence, mul) => {
-                let mut r = sub_sequence.current(pulse, clock_division);
+                let mut r = sub_sequence.current(pulse, clock_division* *mul);
                 r.5 *= *mul;
                 r
             }
@@ -3482,7 +3531,7 @@ impl Subsequence {
         match self {
             Subsequence::Item(..) | Subsequence::Iter(..) | Subsequence::Choice(..) | Subsequence::Rest(..) => 1,
             Subsequence::Tuplet(sub_sequence, ..) => sub_sequence.len(),
-            Subsequence::ClockMultiplier(sub_sequence, ..) => sub_sequence.len(),
+            Subsequence::ClockMultiplier(sub_sequence, mul) => sub_sequence.len(),
         }
     }
 }
@@ -3759,6 +3808,21 @@ impl Node for Pan {
         let pan_mapped = ((pan + 1.0) / 2.0) * (PI / 2.0);
 
         arr![f32x8; l*pan_mapped.sin(),r*pan_mapped.cos()]
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct MonoPan;
+
+impl Node for MonoPan {
+    type Input = U2;
+    type Output = U2;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (pan, i) = (input[0], input[1]);
+        let pan_mapped = ((pan + 1.0) / 2.0) * (PI / 2.0);
+
+        arr![f32x8; i*pan_mapped.sin(),i*pan_mapped.cos()]
     }
 }
 

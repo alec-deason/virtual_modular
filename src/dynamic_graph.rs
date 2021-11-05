@@ -37,7 +37,7 @@ dynamic_nodes!{
         Imp: Impulse::default(),
         CXor: CXor,
         Comp: Comparator,
-        Sine: WaveTable::sine(),
+        Sine: Sine::default(),
         Psine: WaveTable::positive_sine(),
         Saw: WaveTable::saw(),
         PulseOnLoad: PulseOnLoad::default(),
@@ -51,6 +51,7 @@ dynamic_nodes!{
         Pd: PulseDivider::default(),
         Log: Log,
         Pan: Pan,
+        MonoPan: MonoPan,
         MidSideDecoder: MidSideDecoder,
         MidSideEncoder: MidSideEncoder,
         Rescale: ModulatedRescale,
@@ -76,6 +77,7 @@ dynamic_nodes!{
         ScaleMajor: Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]),
         ScaleDegreeMajor: DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675]),
         ScaleDegreeMinor: DegreeQuantizer::new(&[18.35,20.60,21.83,24.50,27.50,29.14, 32.70]),
+        ScaleDegreeChromatic: DegreeQuantizer::chromatic(),
         ScaleDegreeGoblin: TritaveDegreeQuantizer::new(&[18.35,21.468,25.116,30.384,34.3777,40.2195,47.054]),
         BowedString: BowedString::default(),
         PluckedString: PluckedString::default(),
@@ -902,7 +904,7 @@ impl RawSubsequence {
                         s.as_subsequence_rec(defs, seen.clone()).map(|s| {
                             let len = s.len();
                             if len > 1 {
-                                Subsequence::ClockMultiplier(Box::new(s), 1.0/(len as f32))
+                                Subsequence::ClockMultiplier(Box::new(s), len as f32)
                             } else {
                                 s
                             }
