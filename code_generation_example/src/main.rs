@@ -1,7 +1,7 @@
 include!(concat!(env!("OUT_DIR"), "/synth.rs"));
 
 use ::instruments::{simd_graph::*, InstrumentSynth};
-use packed_simd_2::[f32; 8];
+use packed_simd_2::[f32; BLOCK_SIZE];
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 

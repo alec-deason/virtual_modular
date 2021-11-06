@@ -48,7 +48,7 @@ impl InstrumentSynthBuilder {
             synth: RefCell::new(Box::new(synth)),
             synth_sample: (
                 9,
-                arr![[f32; 8]; [0.0f32; BLOCK_SIZE], [0.0f32; BLOCK_SIZE]],
+                arr![[f32; BLOCK_SIZE]; [0.0f32; BLOCK_SIZE], [0.0f32; BLOCK_SIZE]],
             ),
             float_parameters: self.float_parameters,
             float_float_parameters: self.float_float_parameters,
@@ -93,7 +93,7 @@ impl InstrumentSynth {
     pub fn process(&mut self, out_left: &mut [f32], out_right: &mut [f32]) {
         for (left, right) in out_left.iter_mut().zip(out_right) {
             if self.synth_sample.0 >= BLOCK_SIZE {
-                self.synth_sample = (0, self.synth.borrow_mut().process(arr![[f32;8];]));
+                self.synth_sample = (0, self.synth.borrow_mut().process(arr![[f32; BLOCK_SIZE];]));
             }
             let i = self.synth_sample.0;
             *left = (self.synth_sample.1)[0][i];

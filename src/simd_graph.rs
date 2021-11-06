@@ -13,13 +13,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub const BLOCK_SIZE: usize = 8;
+pub const BLOCK_SIZE: usize = 32;
 
-pub type Ports<N> = GenericArray<[f32; 8], N>;
+pub type Ports<N> = GenericArray<[f32; BLOCK_SIZE], N>;
 
 pub trait Node: DynClone {
-    type Input: ArrayLength<[f32; 8]>;
-    type Output: ArrayLength<[f32; 8]>;
+    type Input: ArrayLength<[f32; BLOCK_SIZE]>;
+    type Output: ArrayLength<[f32; BLOCK_SIZE]>;
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output>;
     fn post_process(&mut self) {}
     fn set_sample_rate(&mut self, rate: f32) {}
@@ -37,7 +37,7 @@ impl Node for Mul {
         for i in 0..BLOCK_SIZE {
             r[i] = input[0][i] * input[1][i];
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 #[derive(Copy, Clone)]
@@ -51,7 +51,7 @@ impl Node for Div {
         for i in 0..BLOCK_SIZE {
             r[i] = input[0][i] / input[1][i];
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 #[derive(Copy, Clone)]
@@ -65,7 +65,7 @@ impl Node for Add {
         for i in 0..BLOCK_SIZE {
             r[i] = input[0][i] + input[1][i];
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 #[derive(Copy, Clone)]
@@ -79,7 +79,7 @@ impl Node for Sub {
         for i in 0..BLOCK_SIZE {
             r[i] = input[0][i] - input[1][i];
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -91,7 +91,7 @@ impl Node for Stereo {
 
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        arr![[f32; 8]; input[0], input[0]]
+        arr![[f32; BLOCK_SIZE]; input[0], input[0]]
     }
 }
 
@@ -132,8 +132,8 @@ impl<A, B, C, D> Node for Branch<A, B>
 where
     A: Node<Input = B::Input, Output = C> + Clone,
     B: Node + Clone,
-    C: ArrayLength<[f32; 8]> + std::ops::Add<B::Output, Output = D>,
-    D: ArrayLength<[f32; 8]>,
+    C: ArrayLength<[f32; BLOCK_SIZE]> + std::ops::Add<B::Output, Output = D>,
+    D: ArrayLength<[f32; BLOCK_SIZE]>,
 {
     type Input = A::Input;
     type Output = <A::Output as std::ops::Add<B::Output>>::Output;
@@ -151,13 +151,13 @@ where
 }
 
 #[derive(Clone)]
-pub struct Pass<A: ArrayLength<[f32; 8]>>(A);
-impl<A: ArrayLength<[f32; 8]>> Default for Pass<A> {
+pub struct Pass<A: ArrayLength<[f32; BLOCK_SIZE]>>(A);
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Default for Pass<A> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<A: ArrayLength<[f32; 8]>> Node for Pass<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for Pass<A> {
     type Input = A;
     type Output = A;
     #[inline]
@@ -166,18 +166,18 @@ impl<A: ArrayLength<[f32; 8]>> Node for Pass<A> {
     }
 }
 #[derive(Clone)]
-pub struct Sink<A: ArrayLength<[f32; 8]>>(PhantomData<A>);
-impl<A: ArrayLength<[f32; 8]>> Default for Sink<A> {
+pub struct Sink<A: ArrayLength<[f32; BLOCK_SIZE]>>(PhantomData<A>);
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Default for Sink<A> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<A: ArrayLength<[f32; 8]>> Node for Sink<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for Sink<A> {
     type Input = A;
     type Output = U0;
     #[inline]
     fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
-        arr![[f32; 8]; ]
+        arr![[f32; BLOCK_SIZE]; ]
     }
 }
 
@@ -197,9 +197,9 @@ impl<A, B, C, D, E> Node for Stack<A, B, D>
 where
     A: Node<Input = C, Output = E> + Clone,
     B: Node + Clone,
-    C: ArrayLength<[f32; 8]> + std::ops::Add<B::Input, Output = D>,
-    D: ArrayLength<[f32; 8]> + std::ops::Sub<C, Output = B::Input>,
-    E: ArrayLength<[f32; 8]> + std::ops::Add<B::Output, Output = D>,
+    C: ArrayLength<[f32; BLOCK_SIZE]> + std::ops::Add<B::Input, Output = D>,
+    D: ArrayLength<[f32; BLOCK_SIZE]> + std::ops::Sub<C, Output = B::Input>,
+    E: ArrayLength<[f32; BLOCK_SIZE]> + std::ops::Add<B::Output, Output = D>,
 {
     type Input = <A::Input as std::ops::Add<B::Input>>::Output;
     type Output = <A::Output as std::ops::Add<B::Output>>::Output;
@@ -223,46 +223,48 @@ impl Node for PulseOnLoad {
     #[inline]
     fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
         if self.0 {
-            arr![[f32; 8]; [0.0f32; BLOCK_SIZE]]
+            arr![[f32; BLOCK_SIZE]; [0.0f32; BLOCK_SIZE]]
         } else {
             self.0 = true;
-            arr![[f32; 8]; [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.]]
+            let mut r = [0.0f32; BLOCK_SIZE];
+            r[0] = 1.0;
+            arr![[f32; BLOCK_SIZE]; r]
         }
     }
 }
 
 #[derive(Clone)]
-pub struct RingBufConstant<A: ArrayLength<[f32; 8]>>(
+pub struct RingBufConstant<A: ArrayLength<[f32; BLOCK_SIZE]>>(
     Arc<ringbuf::Consumer<(usize, f32)>>,
     Ports<A>,
 );
-impl<A: ArrayLength<[f32; 8]>> RingBufConstant<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> RingBufConstant<A> {
     pub fn new() -> (Self, ringbuf::Producer<(usize, f32)>) {
         let buf = ringbuf::RingBuffer::new(100);
         let (p, c) = buf.split();
         (RingBufConstant(Arc::new(c), Default::default()), p)
     }
 }
-impl<A: ArrayLength<[f32; 8]>> Node for RingBufConstant<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for RingBufConstant<A> {
     type Input = U0;
     type Output = A;
     #[inline]
     fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
         while let Some((i, v)) = Arc::get_mut(&mut self.0).and_then(|b| b.pop()) {
-            self.1[i] = [v; 8];
+            self.1[i] = [v; BLOCK_SIZE];
         }
         self.1.clone()
     }
 }
 #[derive(Clone)]
-pub struct ArcConstant<A: ArrayLength<[f32; 8]>>(pub Arc<RefCell<Ports<A>>>);
-impl<A: ArrayLength<[f32; 8]>> ArcConstant<A> {
+pub struct ArcConstant<A: ArrayLength<[f32; BLOCK_SIZE]>>(pub Arc<RefCell<Ports<A>>>);
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> ArcConstant<A> {
     pub fn new(a: Ports<A>) -> (Self, Arc<RefCell<Ports<A>>>) {
         let cell = Arc::new(RefCell::new(a));
         (Self(Arc::clone(&cell)), cell)
     }
 }
-impl<A: ArrayLength<[f32; 8]>> Node for ArcConstant<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for ArcConstant<A> {
     type Input = U0;
     type Output = A;
     #[inline]
@@ -271,14 +273,14 @@ impl<A: ArrayLength<[f32; 8]>> Node for ArcConstant<A> {
     }
 }
 #[derive(Clone)]
-pub struct MutexConstant<A: ArrayLength<[f32; 8]>>(pub Arc<Mutex<Ports<A>>>);
-impl<A: ArrayLength<[f32; 8]>> MutexConstant<A> {
+pub struct MutexConstant<A: ArrayLength<[f32; BLOCK_SIZE]>>(pub Arc<Mutex<Ports<A>>>);
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> MutexConstant<A> {
     pub fn new(a: Ports<A>) -> (Self, Arc<Mutex<Ports<A>>>) {
         let mutex = Arc::new(Mutex::new(a));
         (Self(Arc::clone(&mutex)), mutex)
     }
 }
-impl<A: ArrayLength<[f32; 8]>> Node for MutexConstant<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for MutexConstant<A> {
     type Input = U0;
     type Output = A;
     #[inline]
@@ -287,9 +289,9 @@ impl<A: ArrayLength<[f32; 8]>> Node for MutexConstant<A> {
     }
 }
 #[derive(Clone)]
-pub struct OneArcConstant(pub Arc<RefCell<[f32; 8]>>);
+pub struct OneArcConstant(pub Arc<RefCell<[f32; BLOCK_SIZE]>>);
 impl OneArcConstant {
-    pub fn new(a: [f32; 8]) -> (Self, Arc<RefCell<[f32; 8]>>) {
+    pub fn new(a: [f32; BLOCK_SIZE]) -> (Self, Arc<RefCell<[f32; BLOCK_SIZE]>>) {
         let cell = Arc::new(RefCell::new(a));
         (Self(Arc::clone(&cell)), cell)
     }
@@ -299,19 +301,19 @@ impl Node for OneArcConstant {
     type Output = U1;
     #[inline]
     fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
-        arr![[f32; 8]; self.0.borrow().clone()]
+        arr![[f32; BLOCK_SIZE]; self.0.borrow().clone()]
     }
 }
 
 #[derive(Clone)]
-pub struct Bridge<A: ArrayLength<[f32; 8]>>(pub Arc<RefCell<Ports<A>>>);
-impl<A: ArrayLength<[f32; 8]>> Bridge<A> {
+pub struct Bridge<A: ArrayLength<[f32; BLOCK_SIZE]>>(pub Arc<RefCell<Ports<A>>>);
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Bridge<A> {
     pub fn new() -> (Self, ArcConstant<A>) {
         let (constant, cell) = ArcConstant::new(Default::default());
         (Self(cell), constant)
     }
 }
-impl<A: ArrayLength<[f32; 8]>> Node for Bridge<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for Bridge<A> {
     type Input = A;
     type Output = A;
     #[inline]
@@ -321,14 +323,14 @@ impl<A: ArrayLength<[f32; 8]>> Node for Bridge<A> {
     }
 }
 #[derive(Clone)]
-pub struct MutexBridge<A: ArrayLength<[f32; 8]>>(pub Arc<Mutex<Ports<A>>>);
-impl<A: ArrayLength<[f32; 8]>> MutexBridge<A> {
+pub struct MutexBridge<A: ArrayLength<[f32; BLOCK_SIZE]>>(pub Arc<Mutex<Ports<A>>>);
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> MutexBridge<A> {
     pub fn new() -> (Self, MutexConstant<A>) {
         let (constant, cell) = MutexConstant::new(Default::default());
         (Self(cell), constant)
     }
 }
-impl<A: ArrayLength<[f32; 8]>> Node for MutexBridge<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for MutexBridge<A> {
     type Input = A;
     type Output = A;
     #[inline]
@@ -338,7 +340,7 @@ impl<A: ArrayLength<[f32; 8]>> Node for MutexBridge<A> {
     }
 }
 #[derive(Clone)]
-pub struct OneBridge(pub Arc<RefCell<[f32; 8]>>);
+pub struct OneBridge(pub Arc<RefCell<[f32; BLOCK_SIZE]>>);
 impl OneBridge {
     pub fn new() -> (Self, OneArcConstant) {
         let (constant, cell) = OneArcConstant::new(Default::default());
@@ -408,7 +410,7 @@ impl Node for InlineADEnvelope {
             r[i] = self.current;
         }
 
-        arr![[f32; 8]; r, eoc]
+        arr![[f32; BLOCK_SIZE]; r, eoc]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -467,7 +469,7 @@ impl Node for InlineADSREnvelope {
             }
         }
 
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -621,7 +623,7 @@ impl Node for WaveTable {
             r[i] = self.table[self.idx as usize % self.table.len()];
             self.idx += input[i] * d;
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -662,7 +664,7 @@ impl Node for Sine {
             r[i] = v as f32;
         }
 
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -692,7 +694,7 @@ impl Node for SampleAndHold {
             }
             r[i] = self.0;
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -729,7 +731,7 @@ impl Node for Impulse {
                 r[i] = 1.0;
             }
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -752,7 +754,7 @@ impl Node for AllPass {
             self.1 = v;
             r[i] = v;
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -782,7 +784,7 @@ impl Node for PulseDivider {
                 r[i] = gate;
             }
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -811,7 +813,7 @@ impl Node for ModulatedRescale {
             v[i] *= max[i] - min[i];
             v[i] += min[i];
         }
-        arr![[f32; 8]; v]
+        arr![[f32; BLOCK_SIZE]; v]
     }
 }
 
@@ -867,7 +869,7 @@ impl Node for EuclidianPulse {
                 self.triggered = false;
             }
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -900,7 +902,7 @@ impl Node for Folder {
             }
             r[i] = v;
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -937,7 +939,7 @@ impl Node for SumSequencer {
                 self.2 = false;
             }
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 #[derive(Copy, Clone, Debug)]
@@ -1019,7 +1021,7 @@ impl Node for Automation {
             self.step = (self.step + 1) % self.steps.len();
         }
         self.time += self.per_sample;
-        arr![[f32; 8]; [v; BLOCK_SIZE]]
+        arr![[f32; BLOCK_SIZE]; [v; BLOCK_SIZE]]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -1042,7 +1044,7 @@ impl Node for SoftClip {
             out_left[i] = l[i].tanh();
             out_right[i] = r[i].tanh();
         }
-        arr![[f32; 8]; out_left, out_right]
+        arr![[f32; BLOCK_SIZE]; out_left, out_right]
     }
 }
 
@@ -1057,7 +1059,7 @@ impl Node for Toggle {
 
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0f32; 8];
+        let mut r = [0.0f32; BLOCK_SIZE];
         for i in 0..BLOCK_SIZE {
             if input[0][i] > 0.5 {
                 if !self.triggered {
@@ -1069,7 +1071,7 @@ impl Node for Toggle {
             }
             r[i] = if self.value { 1.0 } else { 0.0 };
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -1091,7 +1093,7 @@ impl Node for Comparator {
                 r[i] = 0.0
             }
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -1112,7 +1114,7 @@ impl Node for CXor {
             let v = a.max(b).min(-a.min(b));
             r[i] = v;
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -1202,7 +1204,7 @@ impl Node for SimperSvf {
         if !self.band.is_finite() {
             self.band = 0.0;
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate;
@@ -1239,7 +1241,7 @@ impl Node for Portamento {
                 r[i] = self.current;
             }
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 1.0 / rate;
@@ -1320,10 +1322,10 @@ impl Node for Reverb {
             }
             r_l[i] = left[i] - r_l[i];
             r_r[i] = right[i] - r_r[i];
-            delay_l[*idx_l] = r_l[i]; //self.allpass_l.process(arr![[f32; 8]; [1.0f32; BLOCK_SIZE], r_l])[0];
-            delay_r[*idx_r] = r_r[i]; //self.allpass_r.process(arr![[f32; 8]; [1.0f32; BLOCK_SIZE], r_r])[0];
+            delay_l[*idx_l] = r_l[i]; //self.allpass_l.process(arr![[f32; BLOCK_SIZE]; [1.0f32; BLOCK_SIZE], r_l])[0];
+            delay_r[*idx_r] = r_r[i]; //self.allpass_r.process(arr![[f32; BLOCK_SIZE]; [1.0f32; BLOCK_SIZE], r_r])[0];
         }
-        arr![[f32;8]; r_l, r_r]
+        arr![[f32; BLOCK_SIZE]; r_l, r_r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -1359,7 +1361,7 @@ impl Node for ModableDelay {
             self.line.tick(sig as f64);
             r[i] = self.line.next() as f32;
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -1368,13 +1370,13 @@ impl Node for ModableDelay {
 }
 
 #[derive(Clone)]
-pub struct GenericIdentity<A: ArrayLength<[f32; 8]>>(PhantomData<A>);
-impl<A: ArrayLength<[f32; 8]>> Default for GenericIdentity<A> {
+pub struct GenericIdentity<A: ArrayLength<[f32; BLOCK_SIZE]>>(PhantomData<A>);
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Default for GenericIdentity<A> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<A: ArrayLength<[f32; 8]>> Node for GenericIdentity<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for GenericIdentity<A> {
     type Input = A;
     type Output = A;
     #[inline]
@@ -1434,7 +1436,7 @@ impl Node for Quantizer {
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0f32; 8];
+        let mut r = [0.0f32; BLOCK_SIZE];
         for i in 0..BLOCK_SIZE {
             let input = input[0][i].max(0.0);
             let freq = C0 * 2.0f32.powf(input);
@@ -1452,7 +1454,7 @@ impl Node for Quantizer {
             }
             r[i] = min_freq;
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -1492,7 +1494,7 @@ impl Node for DegreeQuantizer {
             r[i] = self.values[idx] * 2.0f32.powi(octave as i32);
         }
 
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -1523,7 +1525,7 @@ impl Node for TritaveDegreeQuantizer {
             let idx = degree % self.values.len();
             r[i] = self.values[idx] * 3.0f32.powi(octave as i32);
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -1716,7 +1718,7 @@ impl Node for PatternSequencer {
             r_value[i] = self.previous_value;
             r_len[i] = len / 24.0;
         }
-        arr![[f32; 8]; r_value, r_trig, r_gate, r_eoc, r_len]
+        arr![[f32; BLOCK_SIZE]; r_value, r_trig, r_gate, r_eoc, r_len]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -1755,7 +1757,7 @@ impl Node for BernoulliGate {
                 r[1][i] = sig;
             }
         }
-        arr![[f32; 8]; r[0], r[1]]
+        arr![[f32; BLOCK_SIZE]; r[0], r[1]]
     }
 }
 
@@ -1796,7 +1798,7 @@ impl Node for Noise {
             r[i] = self.value;
         }
 
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -1847,7 +1849,7 @@ impl Node for QuadSwitch {
             r[self.idx][i] += sig * self.slew.min(1.0);
             r[self.pidx][i] += sig * (1.0 - self.slew.min(1.0));
         }
-        arr![[f32; 8]; r[0], r[1], r[2], r[3]]
+        arr![[f32; BLOCK_SIZE]; r[0], r[1], r[2], r[3]]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -1885,7 +1887,7 @@ impl Node for SquareWave {
             let pw = pw[i];
             r[i] = self.osc.next_pulse(freq, self.per_sample, pw);
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -1912,7 +1914,7 @@ impl Node for MidSideEncoder {
             r_l[i] = l + r;
             r_r[i] = l - r;
         }
-        arr![[f32; 8]; r_l, r_r]
+        arr![[f32; BLOCK_SIZE]; r_l, r_r]
     }
 }
 
@@ -1933,7 +1935,7 @@ impl Node for MidSideDecoder {
             r_m[i] = m + s;
             r_s[i] = m - s;
         }
-        arr![[f32; 8]; r_m, r_s]
+        arr![[f32; BLOCK_SIZE]; r_m, r_s]
     }
 }
 
@@ -1954,7 +1956,7 @@ impl Node for Pan {
             r_l[i] = l * pan_mapped.sin();
             r_r[i] = r * pan_mapped.cos();
         }
-        arr![[f32; 8]; r_l, r_r]
+        arr![[f32; BLOCK_SIZE]; r_l, r_r]
     }
 }
 
@@ -1975,7 +1977,7 @@ impl Node for MonoPan {
             r_r[i] = input * pan_mapped.cos();
         }
 
-        arr![[f32;8]; r_l, r_r]
+        arr![[f32; BLOCK_SIZE]; r_l, r_r]
     }
 }
 
@@ -2026,24 +2028,24 @@ impl Node for Brownian {
             }
             r[i] = self.current;
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
 #[derive(Clone)]
-pub struct IndexPort<A: ArrayLength<[f32; 8]>>(usize, PhantomData<A>);
-impl<A: ArrayLength<[f32; 8]>> IndexPort<A> {
+pub struct IndexPort<A: ArrayLength<[f32; BLOCK_SIZE]>>(usize, PhantomData<A>);
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> IndexPort<A> {
     pub fn new(port: usize) -> Self {
         IndexPort(port, Default::default())
     }
 }
 
-impl<A: ArrayLength<[f32; 8]>> Node for IndexPort<A> {
+impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for IndexPort<A> {
     type Input = A;
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        arr![[f32; 8]; input[self.0]]
+        arr![[f32; BLOCK_SIZE]; input[self.0]]
     }
 }
 
@@ -2115,7 +2117,7 @@ impl Node for Markov {
             }
             r[i] = self.transitions[self.current_state].0;
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -2140,7 +2142,7 @@ impl Node for PulseOnChange {
                 r[i] = 1.0;
             }
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -2195,7 +2197,7 @@ impl Node for QuantizedImpulse {
             aux[i] = self.aux_current;
             imp[i] = self.current_imp;
         }
-        arr![[f32;8]; imp, aux]
+        arr![[f32; BLOCK_SIZE]; imp, aux]
     }
 }
 
@@ -2270,7 +2272,7 @@ impl Node for BowedString {
 
             r[i] = output as f32;
         }
-        arr![[f32; 8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -2400,7 +2402,7 @@ impl Node for ImaginaryGuitar {
                 s.tick(v);
             }
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -2445,7 +2447,7 @@ impl Node for StringBodyFilter {
             }
             r[i] = v as f32;
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
 
@@ -2497,7 +2499,7 @@ impl Node for PluckedString {
             self.line.tick(v.min(slap_threshold as f64) + pluck);
             r[i] = v as f32;
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -2538,7 +2540,7 @@ impl Node for SympatheticString {
             self.line.tick(v + driver as f64);
             r[i] = v as f32;
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -2985,7 +2987,7 @@ impl Node for WaveMesh {
                 lines.tick();
             }
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -3059,7 +3061,7 @@ impl Node for Flute {
 
             r[i] = body_out as f32;
         }
-        arr![[f32;8]; r]
+        arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {

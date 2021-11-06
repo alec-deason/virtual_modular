@@ -510,16 +510,16 @@ pub trait DynamicNode: DynClone {
     fn post_process(&mut self);
     fn input_len(&self) -> usize;
     fn output_len(&self) -> usize;
-    fn get(&self, i: usize) -> [f32; 8];
-    fn set(&mut self, i: usize, v: [f32; 8]);
-    fn add(&mut self, i: usize, v: [f32; 8]);
+    fn get(&self, i: usize) -> [f32; BLOCK_SIZE];
+    fn set(&mut self, i: usize, v: [f32; BLOCK_SIZE]);
+    fn add(&mut self, i: usize, v: [f32; BLOCK_SIZE]);
     fn set_sample_rate(&mut self, rate: f32);
 }
 dyn_clone::clone_trait_object!(DynamicNode);
 
 impl<
-        A: ArrayLength<[f32; 8]> + ToInt<usize> + Clone,
-        B: ArrayLength<[f32; 8]> + ToInt<usize> + Clone,
+        A: ArrayLength<[f32; BLOCK_SIZE]> + ToInt<usize> + Clone,
+        B: ArrayLength<[f32; BLOCK_SIZE]> + ToInt<usize> + Clone,
         N: Node<Input = A, Output = B> + Clone,
     > DynamicNode for (N, RefCell<Ports<A>>, RefCell<Ports<B>>)
 {
@@ -539,15 +539,15 @@ impl<
         B::to_int()
     }
 
-    fn get(&self, i: usize) -> [f32; 8] {
+    fn get(&self, i: usize) -> [f32; BLOCK_SIZE] {
         self.2.borrow()[i]
     }
 
-    fn set(&mut self, i: usize, v: [f32; 8]) {
+    fn set(&mut self, i: usize, v: [f32; BLOCK_SIZE]) {
         self.1.borrow_mut()[i] = v;
     }
 
-    fn add(&mut self, i: usize, v: [f32; 8]) {
+    fn add(&mut self, i: usize, v: [f32; BLOCK_SIZE]) {
         self.1.borrow_mut()[i]
             .iter_mut()
             .zip(&v)
@@ -640,7 +640,7 @@ impl Expression {
     }
 }
 
-impl DynamicNode for (DynamicGraph, RefCell<[[f32; 8]; 2]>) {
+impl DynamicNode for (DynamicGraph, RefCell<[[f32; BLOCK_SIZE]; 2]>) {
     fn process(&mut self) {
         let r = self.0.process();
         let mut o = self.1.borrow_mut();
@@ -660,15 +660,15 @@ impl DynamicNode for (DynamicGraph, RefCell<[[f32; 8]; 2]>) {
         2
     }
 
-    fn get(&self, i: usize) -> [f32; 8] {
+    fn get(&self, i: usize) -> [f32; BLOCK_SIZE] {
         self.1.borrow()[i]
     }
 
-    fn set(&mut self, i: usize, v: [f32; 8]) {
+    fn set(&mut self, i: usize, v: [f32; BLOCK_SIZE]) {
         self.0.input[i] = v;
     }
 
-    fn add(&mut self, i: usize, v: [f32; 8]) {
+    fn add(&mut self, i: usize, v: [f32; BLOCK_SIZE]) {
         self.0.input[i]
             .iter_mut()
             .zip(&v)
@@ -690,8 +690,8 @@ impl std::fmt::Debug for BoxedDynamicNode {
 }
 impl BoxedDynamicNode {
     pub fn new<
-        A: ArrayLength<[f32; 8]> + ToInt<usize> + Clone + 'static,
-        B: ArrayLength<[f32; 8]> + ToInt<usize> + 'static,
+        A: ArrayLength<[f32; BLOCK_SIZE]> + ToInt<usize> + Clone + 'static,
+        B: ArrayLength<[f32; BLOCK_SIZE]> + ToInt<usize> + 'static,
         N: Node<Input = A, Output = B> + Clone + 'static,
     >(
         n: N,
@@ -718,15 +718,15 @@ impl DynamicNode for BoxedDynamicNode {
         self.0.output_len()
     }
 
-    fn get(&self, i: usize) -> [f32; 8] {
+    fn get(&self, i: usize) -> [f32; BLOCK_SIZE] {
         self.0.get(i)
     }
 
-    fn set(&mut self, i: usize, v: [f32; 8]) {
+    fn set(&mut self, i: usize, v: [f32; BLOCK_SIZE]) {
         self.0.set(i, v);
     }
 
-    fn add(&mut self, i: usize, v: [f32; 8]) {
+    fn add(&mut self, i: usize, v: [f32; BLOCK_SIZE]) {
         self.0.add(i, v);
     }
 
@@ -743,8 +743,8 @@ pub struct DynamicGraph {
     pub external_inputs: Arc<Mutex<HashMap<String, Vec<f32>>>>,
     external_input_nodes: HashMap<String, (String, f32)>,
     pub watch_list: Arc<Mutex<HashSet<String>>>,
-    input: Vec<[f32; 8]>,
-    output: ([f32; 8], [f32; 8]),
+    input: Vec<[f32; BLOCK_SIZE]>,
+    output: ([f32; BLOCK_SIZE], [f32; BLOCK_SIZE]),
     edges: HashMap<String, Vec<(usize, String, usize)>>,
     reset_edges: Vec<(String, usize)>,
     topo_sort: Vec<String>,
@@ -815,12 +815,12 @@ impl DynamicGraph {
         for (node, _) in self.nodes.values_mut() {
             node.post_process();
         }
-        arr![[f32; 8]; self.output.0, self.output.1]
+        arr![[f32; BLOCK_SIZE]; self.output.0, self.output.1]
     }
 
     pub fn add_node<
-        A: ArrayLength<[f32; 8]> + ToInt<usize> + 'static,
-        B: ArrayLength<[f32; 8]> + ToInt<usize> + 'static,
+        A: ArrayLength<[f32; BLOCK_SIZE]> + ToInt<usize> + 'static,
+        B: ArrayLength<[f32; BLOCK_SIZE]> + ToInt<usize> + 'static,
         N: Node<Input = A, Output = B> + Clone + 'static,
     >(
         &mut self,
@@ -1028,11 +1028,11 @@ impl DynamicGraph {
         r
     }
 
-    fn get(&self, n: &str, i: usize) -> Option<[f32; 8]> {
+    fn get(&self, n: &str, i: usize) -> Option<[f32; BLOCK_SIZE]> {
         if n == "input" {
             self.input.get(i).cloned()
         } else if let Some((_, v)) = self.external_input_nodes.get(n) {
-            Some([*v; 8])
+            Some([*v; BLOCK_SIZE])
         } else if let Some(n) = self.nodes.get(n) {
             Some(n.0.get(i))
         } else if let Some(n) = self.dynamic_nodes.get(n) {
