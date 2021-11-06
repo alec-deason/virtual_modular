@@ -1,11 +1,9 @@
 use ::instruments::{simd_graph::*, InstrumentSynth};
-use packed_simd_2::f32x8;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 fn main() {
     let mut builder = InstrumentSynth::builder();
-
 
     let mixer = Pipe(Pipe(Pipe(Constant(1.0), Stereo), Add), Stereo);
     let mut synth = builder.build_with_synth(mixer);

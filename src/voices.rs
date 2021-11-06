@@ -1,5 +1,5 @@
-use generic_array::typenum::*;
 use crate::simd_graph::*;
+use generic_array::typenum::*;
 pub fn lead_voice() -> impl Node<Input = U6, Output = U2> + Clone {
     let (input_input, input) = Bridge::<U6>::new();
     let (bridge_in___detune_0, bridge_out___detune_0) = Bridge::<U1>::new();

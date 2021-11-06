@@ -6,28 +6,24 @@ edition = "2018"
 
 [features]
 instrument = []
-square = ["hexodsp"]
 
 [dependencies]
 rand = "0.8.3"
 dyn-clone = "1.0.4"
-packed_simd_2 = "0.3.6"
-inline_tweak = "1.0.8"
 concat-idents = "1.1.2"
 pom = "3.2.0"
-portmidi = "0.2.5"
-wmidi = "4.0.6"
 uuid = { version="0.8.2", features=["v4"] }
 gilrs = "0.8.1"
 glam = "0.16.0"
-hexodsp = { git = "https://github.com/WeirdConstructor/HexoDSP.git", rev = "360adc10be7dfaf582300c20582f83e214e32c33", optional=true }
 ringbuf = "0.2.5"
 typenum = "1.13.0"
 generic-array = "0.14.4"
 indexmap = "1.6.2"
-jack = "0.7.1"
 
 [dev-dependencies]
+portmidi = "0.2.5"
+wmidi = "4.0.6"
+jack = "0.7.1"
 cpal = {version="0.13", features=["jack"]}
 code_generation_macro = { path = "./code_generation_macro" }
 
