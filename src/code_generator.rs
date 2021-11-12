@@ -263,6 +263,7 @@ pub fn to_rust(builder: &DynamicGraphBuilder, input_code: &[Line]) -> (String, u
             processed.push(node_name.clone());
         }
     }
+    println!("{:?}", edges);
     unreachable!()
 }
 
@@ -275,6 +276,7 @@ fn code_for_node(
         match node_type.as_str() {
             "Output" => (2, 0),
             "pattern_sequencer" => (1, 4),
+            "abc_sequence" => (1, 4),
             "sum_sequencer" => (1, 1),
             "automation" => (0, 1),
             "Constant" => (0, 1),
@@ -305,6 +307,16 @@ fn code_for_node(
                 format!(
                     "PatternSequencer::new({})",
                     p.as_subsequence(&dummy).unwrap().to_rust()
+                )
+            } else {
+                panic!();
+            }
+        }
+        "abc_sequence" => {
+            if let Some(NodeParameters::ABCSequence(_, raw_tune)) = parameters {
+                format!(
+                    "ABCSequence::new::new(\"{}\")",
+                    raw_tune
                 )
             } else {
                 panic!();

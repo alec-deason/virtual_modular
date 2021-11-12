@@ -30,6 +30,8 @@ macro_rules! dynamic_nodes {
 
 dynamic_nodes! {
     std_nodes {
+        InstrumentTuner: InstrumentTuner::default(),
+        ToneHoleFlute: ToneHoleFlute::default(),
         Add: Add,
         Sub: Sub,
         Mul: Mul,
@@ -66,6 +68,7 @@ dynamic_nodes! {
         Bg: BernoulliGate::default(),
         C: Identity,
         QuadSwitch: QuadSwitch::default(),
+        TapsAndStrikes: TapsAndStrikes::default(),
         Folder: Folder,
         EuclidianPulse: EuclidianPulse::default(),
         PulseOnChange: PulseOnChange::default(),
@@ -82,7 +85,7 @@ dynamic_nodes! {
         ImaginaryGuitar: ImaginaryGuitar::default(),
         SympatheticString: SympatheticString::default(),
         WaveMesh: WaveMesh::default(),
-        Flute: Flute::default(),
+        PennyWhistle: PennyWhistle::default(),
         StereoIdentity: StereoIdentity,
         StringBodyFilter: StringBodyFilter::default()
     }
@@ -237,6 +240,25 @@ impl DynamicGraphBuilder {
                     "automation".to_string(),
                     Some(NodeParameters::AutomationSequence(es)),
                 )]
+            })
+        }
+
+        fn abc_seq<'a>() -> Parser<'a, u8, Vec<Line>> {
+            let parameter = sym(b'(') * expression() - sym(b')');
+            let r = node_name() - whitespace() - sym(b'=') - whitespace()
+                - seq(b"abc[\n")
+                + none_of(b"]").repeat(1..).convert(String::from_utf8)
+                - sym(b']') + parameter;
+            r.convert::<_, String, _>(|((name, tune), clock)| {
+                let seq = ABCSequence::new(&tune).ok_or("Could not parse abc notation")?;
+                let mut lines = vec![Line::Node(
+                            name.clone(),
+                            "abc_sequence".to_string(),
+                            Some(NodeParameters::ABCSequence(seq, tune.clone())),
+                            ),
+                ];
+                lines.extend(clock.as_lines(name.clone(), 0));
+                Ok(lines)
             })
         }
 
@@ -427,6 +449,7 @@ impl DynamicGraphBuilder {
                 | poly_voice()
                 | bridge()
                 | external_parameter()
+                | abc_seq()
                 | sequencer()
                 | sumseq()
                 | node_definition()
@@ -965,6 +988,13 @@ impl DynamicGraph {
                                     panic!();
                                 }
                             }
+                            "abc_sequence" => {
+                                if let Some(NodeParameters::ABCSequence(seq, _)) = parameters {
+                                    self.add_node(k.clone(), ty.clone(), seq.clone());
+                                } else {
+                                    panic!();
+                                }
+                            }
                             "automation" => {
                                 if let Some(NodeParameters::AutomationSequence(parameters)) =
                                     parameters
@@ -1049,6 +1079,7 @@ impl DynamicGraph {
 #[derive(Clone, Debug)]
 pub enum NodeParameters {
     PatternSequence(RawSubsequence),
+    ABCSequence(ABCSequence, String),
     Number(f32),
     AutomationSequence(Vec<Interpolation>),
     SumSequence([(u32, f32); 4]),

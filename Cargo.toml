@@ -19,6 +19,8 @@ ringbuf = "0.2.5"
 typenum = "1.13.0"
 generic-array = "0.14.4"
 indexmap = "1.6.2"
+abc-parser = "0.3.0"
+pitch-detection = "0.2.0"
 
 [dev-dependencies]
 portmidi = "0.2.5"

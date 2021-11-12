@@ -7,6 +7,7 @@ use generic_array::{
 };
 use rand::prelude::*;
 use std::{
+    collections::HashMap,
     cell::RefCell,
     f32::consts::{PI, TAU},
     marker::PhantomData,
@@ -738,6 +739,15 @@ impl Node for Impulse {
 #[derive(Copy, Clone, Default)]
 pub struct AllPass(f32, f32);
 
+impl AllPass {
+    fn tick(&mut self, scale: f32, signal: f32) -> f32 {
+        let v = scale * signal + self.0 - scale * self.1;
+        self.0 = signal;
+        self.1 = v;
+        v
+    }
+}
+
 impl Node for AllPass {
     type Input = U2;
     type Output = U1;
@@ -749,10 +759,7 @@ impl Node for AllPass {
         for i in 0..BLOCK_SIZE {
             let scale = scale[i];
             let signal = signal[i];
-            let v = scale * signal + self.0 - scale * self.1;
-            self.0 = signal;
-            self.1 = v;
-            r[i] = v;
+            r[i] = self.tick(scale, signal);
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
@@ -1147,6 +1154,50 @@ impl SimperSvf {
         r.ty = 3;
         r
     }
+
+    pub fn tick(&mut self, fc: f32, res: f32, drive: f32, sig: f32) -> f32 {
+        let freq = 2.0 * (PI * 0.25f32.min(fc / (self.sample_rate * 2.0))).sin();
+        let damp = (2.0f32 * (1.0 - res.powf(0.25))).min(2.0f32.min(2.0 / freq - freq * 0.5));
+
+        self.notch = sig - damp * self.band;
+        self.low = self.low + freq * self.band;
+        self.high = self.notch - self.low;
+        self.band = freq * self.high + self.band - drive * self.band.powi(3);
+        let mut out = 0.5
+            * match self.ty {
+                0 => self.low,
+                1 => self.high,
+                2 => self.band,
+                3 => self.notch,
+                _ => panic!(),
+            };
+        self.notch = sig - damp * self.band;
+        self.low = self.low + freq * self.band;
+        self.high = self.notch - self.low;
+        self.band = freq * self.high + self.band - drive * self.band.powi(3);
+        out += 0.5
+            * match self.ty {
+                0 => self.low,
+                1 => self.high,
+                2 => self.band,
+                3 => self.notch,
+                _ => panic!(),
+            };
+        out += 0.5 * self.low;
+        if !self.notch.is_finite() {
+            self.notch = 0.0;
+        }
+        if !self.low.is_finite() {
+            self.low = 0.0;
+        }
+        if !self.high.is_finite() {
+            self.high = 0.0;
+        }
+        if !self.band.is_finite() {
+            self.band = 0.0;
+        }
+        out
+    }
 }
 impl Node for SimperSvf {
     type Input = U4;
@@ -1162,50 +1213,11 @@ impl Node for SimperSvf {
             let drive = drive[i];
             let sig = sig[i];
 
-            let freq = 2.0 * (PI * 0.25f32.min(fc / (self.sample_rate * 2.0))).sin();
-            let damp = (2.0f32 * (1.0 - res.powf(0.25))).min(2.0f32.min(2.0 / freq - freq * 0.5));
-
-            self.notch = sig - damp * self.band;
-            self.low = self.low + freq * self.band;
-            self.high = self.notch - self.low;
-            self.band = freq * self.high + self.band - drive * self.band.powi(3);
-            let mut out = 0.5
-                * match self.ty {
-                    0 => self.low,
-                    1 => self.high,
-                    2 => self.band,
-                    3 => self.notch,
-                    _ => panic!(),
-                };
-            self.notch = sig - damp * self.band;
-            self.low = self.low + freq * self.band;
-            self.high = self.notch - self.low;
-            self.band = freq * self.high + self.band - drive * self.band.powi(3);
-            out += 0.5
-                * match self.ty {
-                    0 => self.low,
-                    1 => self.high,
-                    2 => self.band,
-                    3 => self.notch,
-                    _ => panic!(),
-                };
-            out += 0.5 * self.low;
-            r[i] = out;
-        }
-        if !self.notch.is_finite() {
-            self.notch = 0.0;
-        }
-        if !self.low.is_finite() {
-            self.low = 0.0;
-        }
-        if !self.high.is_finite() {
-            self.high = 0.0;
-        }
-        if !self.band.is_finite() {
-            self.band = 0.0;
+            r[i] = self.tick(fc, res, drive, sig);
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
+
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate;
     }
@@ -1310,7 +1322,7 @@ impl Node for Reverb {
                     (&mut *delay_l, *idx_l, &mut r_l[i]),
                     (delay_r, *idx_r, &mut r_r[i]),
                 ] {
-                    let l = 1.0 / (1.0 + *fti * dl.len() as f32 * *per_sample * 8.0).powi(2);
+                    let l = 1.0 / (1.0 + *fti * dl.len() as f32 * *per_sample).powi(2);
                     let l = (l * *g * gain[i]) / *tap_total;
                     let mut i = idx as i32 - (*fti * dl.len() as f32) as i32;
                     if i < 0 {
@@ -1322,8 +1334,8 @@ impl Node for Reverb {
             }
             r_l[i] = left[i] - r_l[i];
             r_r[i] = right[i] - r_r[i];
-            delay_l[*idx_l] = r_l[i]; //self.allpass_l.process(arr![[f32; BLOCK_SIZE]; [1.0f32; BLOCK_SIZE], r_l])[0];
-            delay_r[*idx_r] = r_r[i]; //self.allpass_r.process(arr![[f32; BLOCK_SIZE]; [1.0f32; BLOCK_SIZE], r_r])[0];
+            delay_l[*idx_l] = self.allpass_l.tick(1.0, r_l[i]);
+            delay_r[*idx_r] = self.allpass_r.tick(1.0, r_r[i]);
         }
         arr![[f32; BLOCK_SIZE]; r_l, r_r]
     }
@@ -2230,7 +2242,7 @@ impl Default for BowedString {
 }
 
 impl Node for BowedString {
-    type Input = U4;
+    type Input = U5;
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
@@ -2238,22 +2250,26 @@ impl Node for BowedString {
         let bow_velocity = input[1];
         let bow_force = input[2];
         let bow_position = input[3];
+        let base_freq = input[4];
         let mut r = [0.0; BLOCK_SIZE];
         for i in 0..BLOCK_SIZE {
             let freq = freq[i] as f64;
+            let freq = 0.03065048 + 1.00002*freq + 0.00004114233*freq.powi(2);
             let bow_velocity = bow_velocity[i] as f64;
             let bow_force = bow_force[i] as f64;
-            let total_l = (1.0 / freq.max(20.0)) / self.per_sample;
+            let base_freq = base_freq[i] as f64;
+            let total_l = 1.0/(base_freq * self.per_sample);
+            let desired_l = 1.0/(freq.max(base_freq) * self.per_sample);
             let bow_position = ((bow_position[i] as f64 + 1.0) / 2.0).max(0.01).min(0.99);
 
-            let bow_nut_l = total_l * (1.0 - bow_position);
+            let bow_nut_l = total_l * (1.0 - bow_position) - (total_l-desired_l);
             let bow_bridge_l = total_l * bow_position;
 
             self.nut_to_bow.set_delay(bow_nut_l);
             self.bow_to_bridge.set_delay(bow_bridge_l);
 
             let nut = -self.nut_to_bow.next();
-            let bridge = -self.string_filter.tick(self.bow_to_bridge.next());
+            let bridge = -self.string_filter.tick(self.bow_to_bridge.next()).tanh();
 
             let dv = bow_velocity - (nut + bridge);
 
@@ -2277,7 +2293,7 @@ impl Node for BowedString {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 1.0 / rate as f64;
-        self.string_filter = OnePole::new(0.75 - (0.2 * (rate as f64 / 2.0) / rate as f64), 0.9);
+        self.string_filter = OnePole::new(0.75 - (0.2 * 22050.0 / rate as f64), 0.9);
     }
 }
 
@@ -2511,7 +2527,6 @@ impl Node for PluckedString {
 #[derive(Clone)]
 pub struct SympatheticString {
     line: DelayLine,
-    string_filter: OnePole,
     per_sample: f64,
 }
 
@@ -2519,7 +2534,6 @@ impl Default for SympatheticString {
     fn default() -> Self {
         Self {
             line: DelayLine::default(),
-            string_filter: OnePole::new(0.75 - (0.2 * 22050.0 / 44100.0), 0.9),
             per_sample: 1.0 / 44100.0,
         }
     }
@@ -2534,9 +2548,8 @@ impl Node for SympatheticString {
         for i in 0..BLOCK_SIZE {
             let freq = input[0][i];
             let driver = input[1][i];
-            self.string_filter.set_gain(input[2][i] as f64);
             self.line.set_delay((1.0 / (freq as f64)) / self.per_sample);
-            let v = -self.string_filter.tick(self.line.next());
+            let v = -(self.line.next() * input[2][i] as f64).tanh(); //self.string_filter.tick(self.line.next());
             self.line.tick(v + driver as f64);
             r[i] = v as f32;
         }
@@ -2545,7 +2558,6 @@ impl Node for SympatheticString {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 1.0 / rate as f64;
-        self.string_filter = OnePole::new(0.75 - (0.2 * (rate as f64 / 2.0) / rate as f64), 0.99);
     }
 }
 
@@ -2630,13 +2642,26 @@ impl OnePole {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug)]
 struct DelayLine {
     line: Vec<f64>,
     in_index: usize,
     out_index: f64,
-    desired_out_index: f64,
     delay: f64,
+}
+
+
+impl Default for DelayLine {
+    fn default() -> Self {
+        let mut s = Self {
+            line: vec![0.0; 41],
+            in_index: 0,
+            out_index: 0.0,
+            delay: 1.0,
+        };
+        s.set_delay(30.0);
+        s
+    }
 }
 
 impl DelayLine {
@@ -2651,11 +2676,10 @@ impl DelayLine {
             self.line.resize(self.delay as usize * 2, 0.0);
         }
 
-        let mut out_index = self.in_index as f64 - delay;
-        while out_index < 0.0 {
-            out_index += self.line.len() as f64;
+        self.out_index = self.in_index as f64 - delay;
+        while self.out_index < 0.0 {
+            self.out_index += self.line.len() as f64;
         }
-        self.desired_out_index = out_index;
     }
 
     fn add_at(&mut self, amount: f64, position: f64) {
@@ -2674,16 +2698,11 @@ impl DelayLine {
         }
         self.out_index += 1.0;
         if self.out_index >= self.line.len() as f64 {
-            self.out_index = 0.0;
-        }
-        self.desired_out_index += 1.0;
-        if self.desired_out_index >= self.line.len() as f64 {
-            self.desired_out_index = 0.0;
+            self.out_index -= self.line.len() as f64;
         }
     }
 
-    fn next(&mut self) -> f64 {
-        self.out_index += 0.9 * (self.desired_out_index - self.out_index);
+    fn next(&self) -> f64 {
         let alpha = self.out_index.fract();
         let mut out = self.line[self.out_index as usize] * (1.0 - alpha);
         out += if self.out_index + 1.0 >= self.line.len() as f64 {
@@ -2692,6 +2711,49 @@ impl DelayLine {
             self.line[self.out_index as usize + 1]
         } * alpha;
         out
+    }
+}
+
+#[cfg(test)]
+mod delay_tests {
+    use super::*;
+
+    #[test]
+    fn no_interp() {
+        let mut l = DelayLine::default();
+        l.set_delay(10.0);
+        l.tick(1.0);
+        assert_eq!(l.next(), 0.0);
+        for _ in 0..9 {
+            assert_eq!(l.next(), 0.0);
+            l.tick(0.0);
+        }
+        assert_eq!(l.next(), 1.0);
+        l.tick(0.0);
+        for _ in 0..20 {
+            assert_eq!(l.next(), 0.0);
+            l.tick(0.0);
+        }
+    }
+
+    #[test]
+    fn small_interp() {
+        let mut l = DelayLine::default();
+        l.set_delay(10.1);
+        assert_eq!(l.next(), 0.0);
+        l.tick(1.0);
+        for _ in 0..9 {
+            assert_eq!(l.next(), 0.0);
+            l.tick(0.0);
+        }
+        assert!((1.0 - l.next()).abs() < 0.2);
+        l.tick(0.0);
+        for _ in 0..9 {
+            println!("{:?}", l);
+            assert!((0.0 - l.next()).abs() < 0.2);
+            l.tick(0.0);
+        }
+        assert_eq!(l.next(), 0.0);
     }
 }
 
@@ -2754,7 +2816,7 @@ impl BlockDelayLine {
         }
         self.out_index += 1.0;
         if self.out_index >= self.len {
-            self.out_index = 0.0;
+            self.out_index -= self.len;
         }
     }
 
@@ -2820,7 +2882,7 @@ mod block_delay_tests {
         l.input_buffer().copy_from_slice(&[0.0; 10]);
         l.tick();
         for _ in 0..9 {
-            assert_eq!(l.next(), &[0.0; 10]);
+            assert!(l.next().iter().all(|v| (0.0 - *v).abs() < 0.2));
             l.input_buffer().copy_from_slice(&[0.0; 10]);
             l.tick();
         }
@@ -2929,9 +2991,13 @@ impl Node for WaveMesh {
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let driver = input[0];
+        let gain = input[1];
+        let freq = input[2];
+
         let mut r = [0.0; BLOCK_SIZE];
         for i in 0..BLOCK_SIZE {
-            let gain = input[1][i] as f64;
+            let gain = gain[i] as f64;
             if gain != self.gain {
                 for (f, _, _) in &mut self.junctions {
                     if let Some(f) = f {
@@ -2939,7 +3005,7 @@ impl Node for WaveMesh {
                     }
                 }
             }
-            let line_len = input[2][i] as f64 * self.sample_rate * (10.0 / self.lines.len);
+            let line_len = freq[i] as f64 * self.sample_rate * (10.0 / self.lines.len);
             self.lines.set_delay(line_len);
             {
                 let Self {
@@ -2971,8 +3037,7 @@ impl Node for WaveMesh {
                     }
                 }
             }
-            let trigger = input[0][i] as f64 / self.lines.width as f64;
-            let input_idx = self.lines.width / 2;
+            let driver = driver[i] as f64 / self.lines.width as f64;
             r[i] = self.lines_buffer[0] as f32;
             {
                 let Self {
@@ -2982,8 +3047,7 @@ impl Node for WaveMesh {
                 } = self;
                 let b = lines.input_buffer();
                 b.copy_from_slice(&lines_buffer);
-                b.iter_mut().for_each(|b| *b += trigger);
-                //b[input_idx] += trigger as f64;
+                b.iter_mut().for_each(|b| *b += driver);
                 lines.tick();
             }
         }
@@ -3008,6 +3072,7 @@ pub struct Flute {
     y2: f64,
     y1: f64,
     rng: rand::rngs::StdRng,
+    dc_blocker: DCBlocker,
     sample_rate: f64,
 }
 
@@ -3019,6 +3084,7 @@ impl Default for Flute {
             y1: 0.0,
             y2: 0.0,
             rng: rand::rngs::StdRng::from_rng(thread_rng()).unwrap(),
+            dc_blocker: DCBlocker::default(),
             sample_rate: 44100.0,
         }
     }
@@ -3039,7 +3105,8 @@ impl Node for Flute {
 
         let mut r = [0.0; BLOCK_SIZE];
         for i in 0..BLOCK_SIZE {
-            let freq = freq[i] as f64;
+            let freq = (freq[i] as f64).max(20.0);
+            let freq = -3.508965 + 0.9918286*freq + 0.0001488014*freq.powi(2);
             self.body.set_delay((1.0 / freq) * self.sample_rate);
             self.embouchure
                 .set_delay((1.0 / freq) * self.sample_rate * embouchure_ratio[i] as f64);
@@ -3057,7 +3124,7 @@ impl Node for Flute {
             let a = lowpass_cutoff[i] as f64;
             let body_in = a * body_in + (1.0 - a) * self.y1;
             self.y1 = body_in;
-            self.body.tick(body_in);
+            self.body.tick(self.dc_blocker.tick(body_in));
 
             r[i] = body_out as f32;
         }
@@ -3066,5 +3133,572 @@ impl Node for Flute {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate as f64;
+    }
+}
+
+#[derive(Clone, Default)]
+struct DCBlocker {
+    x: f64,
+    y: f64,
+}
+
+impl DCBlocker {
+    fn tick(&mut self, x: f64) -> f64 {
+        let y = x - self.x + 0.995 * self.y;
+        self.x = x;
+        self.y = y;
+        y
+    }
+}
+
+#[derive(Clone)]
+pub struct PennyWhistle {
+    delay_a: DelayLine,
+    delay_b: DelayLine,
+    freq: f64,
+    old_freq: f64,
+    a_or_b: bool,
+    breath: f64,
+    breathing: f64,
+    crossfade: f64,
+    excitation_filter: SimperSvf,
+    body_filter_a: SimperSvf,
+    body_filter_b: SimperSvf,
+    dc_blocker: DCBlocker,
+    per_sample: f64,
+}
+
+impl Default for PennyWhistle {
+    fn default() -> Self {
+        Self {
+            delay_a: DelayLine::default(),
+            delay_b: DelayLine::default(),
+            crossfade: 0.0,
+            freq: 0.0,
+            old_freq: 0.0,
+            a_or_b: false,
+            breath: 10.0,
+            breathing: 0.0,
+            excitation_filter: SimperSvf::low_pass(),
+            body_filter_a: SimperSvf::low_pass(),
+            body_filter_b: SimperSvf::low_pass(),
+            dc_blocker: DCBlocker::default(),
+            per_sample: 1.0 / 44100.0,
+        }
+    }
+}
+
+impl Node for PennyWhistle {
+    type Input = U4;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0];
+        let pressure = input[1];
+        let note_trigger = input[2];
+        let feedback = input[3];
+
+        let mut r = [0.0f32; BLOCK_SIZE];
+        let mut rng = thread_rng();
+
+        for i in 0..BLOCK_SIZE {
+            let mut freq = freq[i].max(1.0);
+            let mut pressure = pressure[i];
+            if pressure == 0.0 {
+                self.breath = (self.breath + self.per_sample*10.0*2.0).min(12.0);
+            }
+            let mut excitation_cutoff = 6000.0;
+            let mut body_cutoff = 8.5;
+            let mut noise_scale = 0.01;
+            let mut feedback = feedback[i];
+            if freq >=  1046.50 {
+                // Second octave
+                excitation_cutoff *= 1.5;
+                body_cutoff /= 2.0;
+                noise_scale *= 1.5;
+                freq += -1.0658208528612741e+002
+                    +  2.3408841612785913e-001 * freq
+                    + -6.6071059587061859e-005 * freq.powi(2);
+            } else {
+
+                freq += -3.6423050308971732e+000
+                    +  3.3458850639015048e-002 * freq;
+            }
+            if self.breath < 0.0 && note_trigger[i] > 0.5 {
+                if self.breathing == 0.0 {
+                    self.breathing = 1.0;
+                    println!("breath");
+                }
+            }
+            if self.breathing > 0.0 {
+                excitation_cutoff = 1500.0 + 2000.0 * (1.0-self.breathing as f32);
+                noise_scale = self.breathing as f32*0.2;
+            }
+            let noise = rng.gen_range(-1.0..1.0) * noise_scale;
+            let excitation = self.excitation_filter.tick(
+                excitation_cutoff,
+                0.0,
+                0.0,
+                noise,
+            );
+            if self.breathing > 0.0 {
+                r[i] += excitation;
+                pressure = 0.0;
+                feedback -= self.breathing.powf(1.5) as f32*feedback*0.8;
+                self.breath = thread_rng().gen_range(8.0..12.0);
+            }
+
+            if (self.freq-freq as f64).abs() > 0.5 {
+                self.a_or_b = !self.a_or_b;
+                self.old_freq = self.freq;
+                self.freq=freq as f64;
+                if self.a_or_b {
+                    self.delay_a
+                        .set_delay((1.0 / (freq as f64)) / self.per_sample as f64);
+                } else {
+                    self.delay_b
+                        .set_delay((1.0 / (freq as f64)) / self.per_sample as f64);
+                }
+                self.crossfade = 1.0;
+            }
+            let delay_out = if self.a_or_b {
+                let mut r = self.body_filter_b.tick(body_cutoff*self.old_freq as f32, 0.0, 0.0, self.delay_b.next() as f32) * self.crossfade as f32;
+                r += self.body_filter_a.tick(body_cutoff*self.freq as f32, 0.0, 0.0, self.delay_a.next() as f32) * (1.0-self.crossfade as f32);
+                r
+            } else {
+                let mut r = self.body_filter_a.tick(body_cutoff*self.old_freq as f32, 0.0, 0.0, self.delay_a.next() as f32) * self.crossfade as f32;
+                r += self.body_filter_b.tick(body_cutoff*self.freq as f32, 0.0, 0.0, self.delay_b.next() as f32) * (1.0-self.crossfade as f32);
+                r
+            };
+            self.crossfade = (self.crossfade - self.per_sample as f64*20.0).max(0.0);
+            self.breath -= self.per_sample;
+            self.breathing = (self.breathing - self.per_sample * 20.0).max(0.0);
+            r[i] += delay_out;
+            let body_feedback = self
+                .dc_blocker
+                .tick(((delay_out * feedback).tanh() + excitation * pressure) as f64);
+            self.delay_a.tick(body_feedback as f64);
+            self.delay_b.tick(body_feedback as f64);
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0 / rate as f64;
+        self.excitation_filter.set_sample_rate(rate);
+        self.body_filter_a.set_sample_rate(rate);
+        self.body_filter_b.set_sample_rate(rate);
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ABCSequence {
+    line: Vec<abc_parser::datatypes::MusicSymbol>,
+    key: HashMap<char, abc_parser::datatypes::Accidental>,
+    idx: usize,
+    clock: u32,
+    sounding: Option<f32>,
+    current_duration: f32,
+    triggered: bool,
+}
+
+impl ABCSequence {
+    pub fn new(tune: &str) -> Option<Self> {
+        let parsed = abc_parser::abc::tune(tune).ok()?;
+        let key = parsed.header.info.iter().find(|f| f.0 == 'K').map(|f| f.1.clone()).unwrap_or("C".to_string());
+        let key:HashMap<_, _> = match key.as_str() {
+            "C" => vec![],
+            "G" => vec![('F', abc_parser::datatypes::Accidental::Sharp)],
+            _ => panic!()
+        }.into_iter().collect();
+        let mut line:Vec<_> = parsed.body.unwrap().music.into_iter().map(|l| l.symbols.clone()).flatten().collect();
+        line.retain(|s| {
+            match s {
+                abc_parser::datatypes::MusicSymbol::Rest(abc_parser::datatypes::Rest::Note(length)) => true,
+                abc_parser::datatypes::MusicSymbol::Note { length, .. } => true,
+                _ => false,
+            }
+        });
+        let mut r = Self {
+            line,
+            key,
+            idx: 0,
+            clock: 0,
+            current_duration: 0.0,
+            sounding: None,
+            triggered: false,
+        };
+        let dur = r.duration(0);
+        r.clock = dur;
+        r.current_duration = dur as f32 / 24.0;
+        r.sounding = r.freq(0);
+        Some(r)
+    }
+}
+
+fn accidental_to_freq_multiplier(accidental: &abc_parser::datatypes::Accidental) -> f32 {
+    let semitones = match accidental {
+        abc_parser::datatypes::Accidental::Sharp => 1,
+        abc_parser::datatypes::Accidental::Flat => -1,
+        abc_parser::datatypes::Accidental::Natural => 0,
+        abc_parser::datatypes::Accidental::DoubleSharp => 2,
+        abc_parser::datatypes::Accidental::DoubleFlat => -2,
+    };
+    2.0f32.powf((semitones * 100) as f32 / 1200.0)
+}
+
+impl ABCSequence {
+    fn freq(&self, idx: usize) -> Option<f32> {
+        if let abc_parser::datatypes::MusicSymbol::Note {
+            note,
+            octave,
+            length,
+            accidental,
+            ..
+        } = self.line[idx]
+        {
+            if accidental.is_some() {
+                todo!()
+            }
+            let mut base = match note {
+                abc_parser::datatypes::Note::C => 16.35,
+                abc_parser::datatypes::Note::D => 18.35,
+                abc_parser::datatypes::Note::E => 20.60,
+                abc_parser::datatypes::Note::F => 21.83,
+                abc_parser::datatypes::Note::G => 24.50,
+                abc_parser::datatypes::Note::A => 27.50,
+                abc_parser::datatypes::Note::B => 30.87,
+            };
+            let accidental = match note {
+                abc_parser::datatypes::Note::C => self.key.get(&'C'),
+                abc_parser::datatypes::Note::D => self.key.get(&'D'),
+                abc_parser::datatypes::Note::E => self.key.get(&'E'),
+                abc_parser::datatypes::Note::F => self.key.get(&'F'),
+                abc_parser::datatypes::Note::G => self.key.get(&'G'),
+                abc_parser::datatypes::Note::A => self.key.get(&'A'),
+                abc_parser::datatypes::Note::B => self.key.get(&'B'),
+            };
+            if let Some(accidental) = accidental {
+                base *= accidental_to_freq_multiplier(accidental);
+            }
+            Some(base * 2.0f32.powi(octave as i32 + 2))
+        } else {
+            panic!()
+        }
+    }
+
+    fn duration(&self, idx: usize) -> u32 {
+        match self.line[idx] {
+            abc_parser::datatypes::MusicSymbol::Rest(abc_parser::datatypes::Rest::Note(length)) => {
+                unimplemented!()
+            }
+            abc_parser::datatypes::MusicSymbol::Note { length, .. } => (length * 24.0) as u32,
+            _ => panic!("{:?}", self.line[idx]),
+        }
+    }
+}
+
+impl Node for ABCSequence {
+    type Input = U1;
+    type Output = U4;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let trigger = input[0];
+
+        let mut r_freq = [0.0f32; BLOCK_SIZE];
+        let mut r_gate = [0.0f32; BLOCK_SIZE];
+        let mut r_eoc = [0.0f32; BLOCK_SIZE];
+        let mut r_dur = [0.0f32; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            if trigger[i] > 0.5  {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.clock -= 1;
+                }
+            } else {
+                self.triggered = false;
+            }
+            if self.clock == 0 {
+                self.idx = self.idx + 1;
+                if self.idx >= self.line.len() {
+                    self.idx = 0;
+                    r_eoc[i] = 1.0;
+                }
+                self.clock = self.duration(self.idx);
+                self.current_duration = self.clock as f32 / 24.0;
+                self.sounding = self.freq(self.idx);
+                r_gate[i] = 0.0;
+            } else {
+                r_gate[i] = if self.sounding.is_some() { 1.0 } else { 0.0 };
+            }
+            r_freq[i] = self.sounding.unwrap_or(0.0);
+            r_dur[i] = self.current_duration;
+        }
+
+        arr![[f32; BLOCK_SIZE]; r_freq, r_gate, r_eoc, r_dur]
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Compressor {
+}
+
+#[derive(Clone, Default)]
+pub struct TapsAndStrikes {
+    current_freq: f32,
+    old_freq: f32,
+    current_freq_modified: f32,
+    crossover:f32,
+    can_roll: bool,
+    triggered: bool,
+    per_sample: f32,
+}
+
+impl Node for TapsAndStrikes {
+    type Input = U5;
+    type Output = U2;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0];
+        let trigger = input[1];
+        let prob = input[2];
+        let roll_prob = input[3];
+        let attack = input[4];
+
+        let mut r_freq = [0.0f32; BLOCK_SIZE];
+        let mut r_trigger = [0.0f32; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            let mut could_hit = false;
+            let mut must_hit = false;
+            let new_freq = freq[i];
+            if trigger[i] > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    could_hit = true;
+                    self.can_roll = true;
+                    if new_freq == self.current_freq {
+                        must_hit = true;
+                    }
+                    self.old_freq = self.current_freq;
+                    self.current_freq = new_freq;
+                }
+            } else {
+                self.triggered = false;
+            }
+            r_freq[i] = self.current_freq_modified;
+            self.crossover = self.crossover - self.per_sample/attack[i];
+            if self.crossover <= 0.0 {
+                self.current_freq_modified = self.current_freq;
+            }
+            let mut prob = prob[i];
+            if self.can_roll && self.crossover <= -1.0 {
+                could_hit = true;
+                prob = roll_prob[i];
+                self.can_roll = false;
+            }
+            if must_hit || (could_hit && thread_rng().gen::<f32>() < prob) {
+                if self.current_freq > self.old_freq {
+                    self.current_freq_modified = self.current_freq * 1.05;
+                } else {
+                    self.current_freq_modified = self.current_freq * 0.95;
+                }
+                self.crossover = 1.0;
+                r_trigger[i] = 1.0;
+            }
+        }
+        arr![[f32; BLOCK_SIZE]; r_freq, r_trigger]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0 / rate;
+    }
+}
+
+use pitch_detection::detector::mcleod::McLeodDetector;
+use pitch_detection::detector::PitchDetector;
+#[derive(Clone)]
+pub struct InstrumentTuner {
+    rate: usize,
+    buffer: [f32; 1024*10],
+    corrections: Vec<(f32, f32)>,
+    sweep_frequencies: Vec<(f32, f32)>,
+    fill_idx: usize,
+    test_idx: usize,
+    sweep_idx: usize,
+    sweep_clock: f32,
+}
+
+impl Default for InstrumentTuner {
+    fn default() -> Self {
+        let mut sweep_frequencies = vec![(160.0, 0.0)];
+        while sweep_frequencies[sweep_frequencies.len()-1].0 < 2000.0 {
+            let new_freq = sweep_frequencies[sweep_frequencies.len()-1].0 + 100.123;
+            sweep_frequencies.push((new_freq, 0.0));
+        }
+        let mut corrections = vec![(0.0, 0.0), (-100.0, 0.0)];
+        while corrections[corrections.len()-1].0 < 100.0 {
+            let new_freq = corrections[corrections.len()-1].0 + 1.0;
+            corrections.push((new_freq, 0.0));
+        }
+        Self {
+            rate: 44100,
+            buffer: [0.0; 1024*10],
+            fill_idx: 0,
+            sweep_frequencies,
+            sweep_idx: 0,
+            test_idx: 0,
+            corrections,
+            sweep_clock: 1.0,
+        }
+    }
+}
+
+impl Node for InstrumentTuner {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = [0.0; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            self.sweep_clock -= 1.0/self.rate as f32;
+            if self.sweep_clock <= 0.0 {
+                if self.fill_idx == self.buffer.len() {
+                    const POWER_THRESHOLD : f32 = 5.0;
+                    const CLARITY_THRESHOLD : f32 = 0.7;
+                    let mut detector = McLeodDetector::new(1024*10, (1024*10)/2);
+
+                    let pitch = detector.get_pitch(&self.buffer, self.rate, POWER_THRESHOLD, CLARITY_THRESHOLD).unwrap();
+                    self.fill_idx = 0;
+                    let error = (pitch.frequency - self.sweep_frequencies[self.sweep_idx].0).abs();
+                    self.corrections[self.test_idx].1 = error;
+                    self.sweep_clock = 0.1;
+                    if self.test_idx == self.corrections.len() -1 {
+                        let best = self.corrections.iter().min_by_key(|(_, e)| (e * 10000.0) as i32).unwrap_or(&(0.0, 0.0)).0;
+                        self.sweep_frequencies[self.sweep_idx].1 = best;
+                        self.sweep_idx += 1;
+                        self.test_idx = 0;
+                    } else {
+                        self.test_idx += 1;
+                    }
+                    if self.sweep_idx == self.sweep_frequencies.len() -1 && self.test_idx == self.corrections.len() - 1 {
+                        println!("{:?}", self.sweep_frequencies);
+                        self.sweep_idx = 0;
+                    }
+                } else {
+                    self.buffer[self.fill_idx] = input[0][i];
+                    self.fill_idx += 1;
+                }
+            }
+            r[i] = self.sweep_frequencies[self.sweep_idx].0 + self.corrections[self.test_idx].0;
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.rate = rate as usize;
+    }
+}
+
+#[derive(Clone)]
+pub struct ToneHoleFlute {
+    tone_holes: Vec<ToneHole>,
+    plus_lines: Vec<DelayLine>,
+    plus_lines_buffer: Vec<f64>,
+    minus_lines: Vec<DelayLine>,
+    minus_lines_buffer: Vec<f64>,
+    body_filter: SimperSvf,
+}
+
+impl Default for ToneHoleFlute {
+    fn default() -> Self {
+        Self {
+            tone_holes: (0..4).map(|_| ToneHole::default()).collect(),
+            minus_lines: (0..4).map(|_| DelayLine::default()).collect(),
+            minus_lines_buffer: vec![0.0; 4],
+            plus_lines: (0..4).map(|_| DelayLine::default()).collect(),
+            plus_lines_buffer: vec![0.0; 4],
+            body_filter: SimperSvf::low_pass(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ToneHole {
+    line: DelayLine,
+    filter: SimperSvf,
+}
+
+impl Default for ToneHole {
+    fn default() -> Self {
+        Self {
+            line: DelayLine::default(),
+            filter: SimperSvf::low_pass(),
+        }
+    }
+}
+
+impl ToneHole {
+    fn tick(&mut self, pa_plus: f64, pb_minus: f64, r0: f64, hole_reflectivity: f64) -> (f64, f64) {
+        let pth_minus = self.line.next();
+
+        let middle = (pa_plus + pth_minus*-2.0 + pb_minus) * r0;
+        self.line.tick(-(self.filter.tick(10000.0, 0.0, 0.0, (pth_minus*-1.0+pb_minus+middle+pa_plus) as f32) as f64*hole_reflectivity).tanh());
+
+        (
+            middle+pa_plus,
+            middle+pb_minus,
+        )
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.line.set_delay((1.0/6880.0) * rate as f64);
+    }
+}
+
+impl Node for ToneHoleFlute {
+    type Input = U4;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let noise_scale = input[0];
+        let r0 = input[1];
+        let hole_reflectivity = input[2];
+        let feedback = input[3];
+
+        let mut r = [0.0f32; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            let r0 = r0[i] as f64;
+            let hole_reflectivity = hole_reflectivity[i] as f64;
+            let feedback = feedback[i] as f64;
+
+            self.plus_lines_buffer.iter_mut().zip(&self.plus_lines).for_each(|(b,l)| *b = l.next());
+            self.minus_lines_buffer.iter_mut().zip(&self.minus_lines).for_each(|(b,l)| *b = l.next());
+            for (j, ((h, plus_in), minus_in)) in self.tone_holes.iter_mut().zip(&self.plus_lines_buffer).zip(&self.minus_lines_buffer).enumerate() {
+                let reflectivity = if hole_reflectivity > i as f64 { 0.0 } else { 1.0 };
+                let (positive, negative) = h.tick(*plus_in, *minus_in, r0, reflectivity);
+                if j > 0 {
+                    self.minus_lines[j-1].tick(negative);
+                } else {
+                    self.plus_lines[0].tick(-negative + thread_rng().gen_range(-1.0..1.0)*noise_scale[j] as f64);
+                }
+                if j < self.plus_lines.len()-1 {
+                    self.plus_lines[j+1].tick(positive);
+                } else {
+                    self.minus_lines[j].tick(-(self.body_filter.tick(10000.0, 0.0,0.0,positive as f32) as f64 * feedback).tanh());
+                    r[i] = positive as f32;
+                }
+
+            }
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        for h in &mut self.tone_holes {
+            h.set_sample_rate(rate);
+        }
+        for l in self.minus_lines.iter_mut().chain(&mut self.plus_lines) {
+            l.set_delay((1.0/880.0) * rate as f64);
+        }
     }
 }
