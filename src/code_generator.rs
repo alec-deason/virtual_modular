@@ -315,7 +315,7 @@ fn code_for_node(
         "abc_sequence" => {
             if let Some(NodeParameters::ABCSequence(_, raw_tune)) = parameters {
                 format!(
-                    "ABCSequence::new::new(\"{}\")",
+                    "ABCSequence::new(\"{}\")",
                     raw_tune
                 )
             } else {
