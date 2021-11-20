@@ -1125,103 +1125,95 @@ impl Node for CXor {
     }
 }
 
-//https://www.musicdsp.org/en/latest/Filters/92-state-variable-filter-double-sampled-stable.html
+// Based on https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf
 #[derive(Copy, Clone, Default)]
-pub struct SimperSvf {
-    notch: f32,
-    low: f32,
-    high: f32,
-    band: f32,
+pub struct Simper {
+    cutoff: f32,
+    resonance: f32,
+    k: f32,
+    a1: f32,
+    a2: f32,
+    a3: f32,
+    ic1eq: f32,
+    ic2eq: f32,
     sample_rate: f32,
-    ty: u32,
 }
-impl SimperSvf {
-    pub fn low_pass() -> Self {
-        Self::default()
-    }
-    pub fn high_pass() -> Self {
-        let mut r = Self::default();
-        r.ty = 1;
-        r
-    }
-    pub fn band_pass() -> Self {
-        let mut r = Self::default();
-        r.ty = 2;
-        r
-    }
-    pub fn notch() -> Self {
-        let mut r = Self::default();
-        r.ty = 3;
-        r
+impl Simper {
+    fn set_parameters(&mut self, cutoff: f32, resonance: f32) {
+        if cutoff != self.cutoff || resonance != self.resonance {
+            self.cutoff = cutoff;
+            self.resonance = resonance;
+            let g = (PI * (cutoff/self.sample_rate)).tan();
+            self.k = 2.0 - 2.0*resonance.min(1.0).max(0.0);
+
+            self.a1 = 1.0 / (1.0 + g*(g+self.k));
+            self.a2 = g*self.a1;
+            self.a3 = g*self.a2;
+        }
     }
 
-    pub fn tick(&mut self, fc: f32, res: f32, drive: f32, sig: f32) -> f32 {
-        let freq = 2.0 * (PI * 0.25f32.min(fc / (self.sample_rate * 2.0))).sin();
-        let damp = (2.0f32 * (1.0 - res.powf(0.25))).min(2.0f32.min(2.0 / freq - freq * 0.5));
+    fn tick(&mut self, input: f32) -> (f32, f32) {
+        let v3 = input - self.ic2eq;
+        let v1 = self.a1*self.ic1eq + self.a2*v3;
+        let v2 = self.ic2eq + self.a2*self.ic1eq + self.a3*v3;
 
-        self.notch = sig - damp * self.band;
-        self.low = self.low + freq * self.band;
-        self.high = self.notch - self.low;
-        self.band = freq * self.high + self.band - drive * self.band.powi(3);
-        let mut out = 0.5
-            * match self.ty {
-                0 => self.low,
-                1 => self.high,
-                2 => self.band,
-                3 => self.notch,
-                _ => panic!(),
-            };
-        self.notch = sig - damp * self.band;
-        self.low = self.low + freq * self.band;
-        self.high = self.notch - self.low;
-        self.band = freq * self.high + self.band - drive * self.band.powi(3);
-        out += 0.5
-            * match self.ty {
-                0 => self.low,
-                1 => self.high,
-                2 => self.band,
-                3 => self.notch,
-                _ => panic!(),
-            };
-        out += 0.5 * self.low;
-        if !self.notch.is_finite() {
-            self.notch = 0.0;
-        }
-        if !self.low.is_finite() {
-            self.low = 0.0;
-        }
-        if !self.high.is_finite() {
-            self.high = 0.0;
-        }
-        if !self.band.is_finite() {
-            self.band = 0.0;
-        }
-        out
+        self.ic1eq = 2.0*v1 - self.ic1eq;
+        self.ic2eq = 2.0*v2 - self.ic2eq;
+
+        (v1, v2)
     }
-}
-impl Node for SimperSvf {
-    type Input = U4;
-    type Output = U1;
 
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (fc, res, drive, sig) = (input[0], input[1], input[2], input[3]);
-        let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            let fc = fc[i];
-            let res = res[i];
-            let drive = drive[i];
-            let sig = sig[i];
+    fn low(&mut self, input: f32) -> f32 {
+        self.tick(input).1
+    }
 
-            r[i] = self.tick(fc, res, drive, sig);
-        }
-        arr![[f32; BLOCK_SIZE]; r]
+    fn band(&mut self, input: f32) -> f32 {
+        self.tick(input).0
+    }
+
+    fn high(&mut self, input: f32) -> f32 {
+        let (v1, v2) = self.tick(input);
+        input  - self.k*v1 - v2
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate;
     }
 }
+
+macro_rules! simper {
+    ($struct_name:ident, $tick:ident) => {
+        #[derive(Copy, Clone, Default)]
+        pub struct $struct_name(Simper);
+        impl Node for $struct_name {
+            type Input = U3;
+            type Output = U1;
+
+            #[inline]
+            fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+                let cutoff = input[0];
+                let resonance = input[1];
+                let input = input[2];
+                let mut r = [0.0; BLOCK_SIZE];
+                for i in 0..BLOCK_SIZE {
+                    let input = input[i];
+                    let cutoff = cutoff[i];
+                    let resonance = resonance[i];
+                    self.0.set_parameters(cutoff, resonance);
+                    r[i] = self.0.$tick(input);
+                }
+                arr![[f32; BLOCK_SIZE]; r]
+            }
+
+            fn set_sample_rate(&mut self, rate: f32) {
+                self.0.set_sample_rate(rate);
+            }
+        }
+    }
+}
+simper!(SimperLowPass, low);
+simper!(SimperHighPass, high);
+simper!(SimperBandPass, band);
 
 #[derive(Copy, Clone, Default)]
 pub struct Portamento {
@@ -3161,9 +3153,9 @@ pub struct PennyWhistle {
     breath: f64,
     breathing: f64,
     crossfade: f64,
-    excitation_filter: SimperSvf,
-    body_filter_a: SimperSvf,
-    body_filter_b: SimperSvf,
+    excitation_filter: Simper,
+    body_filter_a: Simper,
+    body_filter_b: Simper,
     dc_blocker: DCBlocker,
     per_sample: f64,
 }
@@ -3179,9 +3171,9 @@ impl Default for PennyWhistle {
             a_or_b: false,
             breath: 10.0,
             breathing: 0.0,
-            excitation_filter: SimperSvf::low_pass(),
-            body_filter_a: SimperSvf::low_pass(),
-            body_filter_b: SimperSvf::low_pass(),
+            excitation_filter: Simper::default(),
+            body_filter_a: Simper::default(),
+            body_filter_b: Simper::default(),
             dc_blocker: DCBlocker::default(),
             per_sample: 1.0 / 44100.0,
         }
@@ -3235,10 +3227,8 @@ impl Node for PennyWhistle {
                 noise_scale = self.breathing as f32*0.2;
             }
             let noise = rng.gen_range(-1.0..1.0) * noise_scale;
-            let excitation = self.excitation_filter.tick(
-                excitation_cutoff,
-                0.0,
-                0.0,
+            self.excitation_filter.set_parameters(excitation_cutoff, 0.0);
+            let excitation = self.excitation_filter.low(
                 noise,
             );
             if self.breathing > 0.0 {
@@ -3262,12 +3252,16 @@ impl Node for PennyWhistle {
                 self.crossfade = 1.0;
             }
             let delay_out = if self.a_or_b {
-                let mut r = self.body_filter_b.tick(body_cutoff*self.old_freq as f32, 0.0, 0.0, self.delay_b.next() as f32) * self.crossfade as f32;
-                r += self.body_filter_a.tick(body_cutoff*self.freq as f32, 0.0, 0.0, self.delay_a.next() as f32) * (1.0-self.crossfade as f32);
+                self.body_filter_b.set_parameters(body_cutoff*self.old_freq as f32, 0.0);
+                let mut r = self.body_filter_b.low(self.delay_b.next() as f32) * self.crossfade as f32;
+                self.body_filter_a.set_parameters(body_cutoff*self.freq as f32, 0.0);
+                r += self.body_filter_a.low(self.delay_a.next() as f32) * (1.0-self.crossfade as f32);
                 r
             } else {
-                let mut r = self.body_filter_a.tick(body_cutoff*self.old_freq as f32, 0.0, 0.0, self.delay_a.next() as f32) * self.crossfade as f32;
-                r += self.body_filter_b.tick(body_cutoff*self.freq as f32, 0.0, 0.0, self.delay_b.next() as f32) * (1.0-self.crossfade as f32);
+                self.body_filter_a.set_parameters(body_cutoff*self.old_freq as f32, 0.0);
+                let mut r = self.body_filter_a.low(self.delay_a.next() as f32) * self.crossfade as f32;
+                self.body_filter_b.set_parameters(body_cutoff*self.freq as f32, 0.0);
+                r += self.body_filter_b.low(self.delay_b.next() as f32) * (1.0-self.crossfade as f32);
                 r
             };
             self.crossfade = (self.crossfade - self.per_sample as f64*20.0).max(0.0);
@@ -3606,18 +3600,20 @@ pub struct ToneHoleFlute {
     plus_lines_buffer: Vec<f64>,
     minus_lines: Vec<DelayLine>,
     minus_lines_buffer: Vec<f64>,
-    body_filter: SimperSvf,
+    body_filter: Simper,
 }
 
 impl Default for ToneHoleFlute {
     fn default() -> Self {
+        let mut body_filter = Simper::default();
+        body_filter.set_parameters(10000.0, 0.0);
         Self {
             tone_holes: (0..4).map(|_| ToneHole::default()).collect(),
             minus_lines: (0..4).map(|_| DelayLine::default()).collect(),
             minus_lines_buffer: vec![0.0; 4],
             plus_lines: (0..4).map(|_| DelayLine::default()).collect(),
             plus_lines_buffer: vec![0.0; 4],
-            body_filter: SimperSvf::low_pass(),
+            body_filter,
         }
     }
 }
@@ -3625,14 +3621,16 @@ impl Default for ToneHoleFlute {
 #[derive(Clone)]
 struct ToneHole {
     line: DelayLine,
-    filter: SimperSvf,
+    filter: Simper,
 }
 
 impl Default for ToneHole {
     fn default() -> Self {
+        let mut filter = Simper::default();
+        filter.set_parameters(10000.0, 0.0);
         Self {
             line: DelayLine::default(),
-            filter: SimperSvf::low_pass(),
+            filter,
         }
     }
 }
@@ -3642,7 +3640,7 @@ impl ToneHole {
         let pth_minus = self.line.next();
 
         let middle = (pa_plus + pth_minus*-2.0 + pb_minus) * r0;
-        self.line.tick(-(self.filter.tick(10000.0, 0.0, 0.0, (pth_minus*-1.0+pb_minus+middle+pa_plus) as f32) as f64*hole_reflectivity).tanh());
+        self.line.tick(-(self.filter.low((pth_minus*-1.0+pb_minus+middle+pa_plus) as f32) as f64*hole_reflectivity).tanh());
 
         (
             middle+pa_plus,
@@ -3684,7 +3682,7 @@ impl Node for ToneHoleFlute {
                 if j < self.plus_lines.len()-1 {
                     self.plus_lines[j+1].tick(positive);
                 } else {
-                    self.minus_lines[j].tick(-(self.body_filter.tick(10000.0, 0.0,0.0,positive as f32) as f64 * feedback).tanh());
+                    self.minus_lines[j].tick(-(self.body_filter.low(positive as f32) as f64 * feedback).tanh());
                     r[i] = positive as f32;
                 }
 
@@ -3700,5 +3698,81 @@ impl Node for ToneHoleFlute {
         for l in self.minus_lines.iter_mut().chain(&mut self.plus_lines) {
             l.set_delay((1.0/880.0) * rate as f64);
         }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Accumulator {
+    value: f32,
+    sum_triggered: bool,
+    reset_triggered: bool,
+}
+impl Node for Accumulator {
+    type Input = U4;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let value = input[0];
+        let sum_trigger = input[1];
+        let reset_value = input[2];
+        let reset_trigger = input[3];
+
+        let mut r = [0.0; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            if sum_trigger[i] > 0.5 {
+                if !self.sum_triggered {
+                    self.sum_triggered = true;
+                    self.value += value[i];
+                }
+            } else {
+                self.sum_triggered = false;
+            }
+            if reset_trigger[i] > 0.5 {
+                if !self.reset_triggered {
+                    self.reset_triggered = true;
+                    self.value = reset_value[i];
+                }
+            } else {
+                self.reset_triggered = false;
+            }
+            r[i] = self.value;
+        }
+
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+}
+
+#[derive(Clone)]
+pub struct Reverb2 {
+    lines: Vec<(DelayLine, f64)>,
+}
+impl Default for Reverb2 {
+    fn default() -> Self {
+        let mut rng = thread_rng();
+        Self {
+            lines: (0..100).map(|_| {
+                let mut line = DelayLine::default();
+                line.set_delay(rng.gen_range(0.0..1000.0));
+                (line, rng.gen_range(0.1..0.8))
+            }).collect()
+        }
+    }
+}
+impl Node for Reverb2 {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = [0.0; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            let mut input = input[0][i] as f64;
+            for (l,g) in &mut self.lines {
+                let v = l.next();
+                l.tick(input + v * *g);
+                input = input * -*g + v * (1.0-g.powi(2));
+            }
+            r[i] = input as f32;
+        }
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }
