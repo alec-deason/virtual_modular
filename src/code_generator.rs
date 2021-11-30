@@ -90,18 +90,21 @@ pub fn to_rust(builder: &DynamicGraphBuilder, input_code: &[Line]) -> (String, u
                         .entry(src_node)
                         .or_insert_with(HashSet::new)
                         .insert(src_port);
+                    input_count.insert(bridge_name.clone(), 0);
                     edges.entry(dst_node).or_insert_with(Vec::new).push((
                         bridge_name.clone(),
-                        0,
+                        *src_port,
                         dst_port,
                     ));
-                    input_count.insert(bridge_name.clone(), 0);
+                    let out_ports = nodes
+                        .get(src_node)
+                        .expect(&format!("Node not found: {}", src_node)).2;
                     nodes.insert(
                         bridge_name,
                         (
-                            format!("bridge_out___{}_{}.clone()", src_node, src_port),
+                            format!("bridge_out___{}.clone()", src_node),
                             0,
-                            1,
+                            out_ports,
                         ),
                     );
                 } else {
@@ -130,13 +133,14 @@ pub fn to_rust(builder: &DynamicGraphBuilder, input_code: &[Line]) -> (String, u
         ));
     }
 
-    for (node_name, ports) in &bridge_map {
-        for port in ports {
-            output_code.push_str(&format!(
-                "let (bridge_in___{}_{}, bridge_out___{}_{}) = Bridge::<U1>::new();\n",
-                node_name, port, node_name, port
-            ));
-        }
+    for (node_name, _ports) in &bridge_map {
+        let (_, _, out_ports) = &nodes
+            .get(node_name.as_str())
+            .expect(&format!("Node not found: {}", node_name));
+        output_code.push_str(&format!(
+            "let (bridge_in___{}, bridge_out___{}) = Bridge::<U{}>::new();\n",
+            node_name, node_name, out_ports
+        ));
     }
 
     let mut processed = vec![];
@@ -164,6 +168,9 @@ pub fn to_rust(builder: &DynamicGraphBuilder, input_code: &[Line]) -> (String, u
                     needed_ports.remove(dst_port);
                     let (code, in_ports, out_ports) = &nodes[&src_node];
                     let mut code = code.clone();
+                    if bridge_map.contains_key(&src_node) {
+                        code = format!("Pipe({}, bridge_in___{})", code, src_node);
+                    }
                     if *out_ports > 1 {
                         code = format!("Pipe({}, IndexPort::new({}))", code, src_port);
                     }
@@ -222,32 +229,6 @@ pub fn to_rust(builder: &DynamicGraphBuilder, input_code: &[Line]) -> (String, u
                 format!("Pipe({}, {})", in_code[0], code)
             };
 
-            if let Some(bridge_ports) = bridge_map.get(&node_name) {
-                let mut outputs: Vec<_> = (0..*out_ports)
-                    .map(|i| {
-                        if bridge_ports.contains(&&i) {
-                            (format!("bridge_in___{}_{}", node_name, i), 1)
-                        } else {
-                            ("Identity".to_string(), 1)
-                        }
-                    })
-                    .collect();
-                while outputs.len() > 1 {
-                    let mut new_outputs = vec![];
-                    for es in outputs.chunks(2) {
-                        if es.len() == 1 {
-                            new_outputs.push(es[0].clone());
-                        } else {
-                            new_outputs.push((
-                                format!("Stack::new({}, {})", es[0].0, es[1].0),
-                                es[0].1 + es[1].1,
-                            ));
-                        }
-                    }
-                    outputs = new_outputs;
-                }
-                code = format!("Pipe({}, {})", code, outputs[0].0);
-            }
             nodes.get_mut(&node_name).unwrap().0 = code;
             for (dst_node, in_edges) in &edges {
                 for (src_node, _, _) in in_edges {
@@ -275,7 +256,8 @@ fn code_for_node(
     let (input_port_count, output_port_count) = {
         match node_type.as_str() {
             "Output" => (2, 0),
-            "pattern_sequencer" => (1, 4),
+            "pattern_sequencer" => (1, 5),
+            "burst_sequencer" => (2, 5),
             "abc_sequence" => (1, 4),
             "sum_sequencer" => (1, 1),
             "automation" => (0, 1),
@@ -300,14 +282,22 @@ fn code_for_node(
                 panic!();
             }
         }
+        "burst_sequencer" |
         "pattern_sequencer" => {
-            if let Some(NodeParameters::PatternSequence(p)) = parameters {
+            if let Some(NodeParameters::PatternSequence(p, is_burst)) = parameters {
                 //TODO: Support nested sequencers
-                let mut dummy = HashMap::new();
-                format!(
-                    "PatternSequencer::new({})",
-                    p.as_subsequence(&dummy).unwrap().to_rust()
-                )
+                let dummy = HashMap::new();
+                if is_burst {
+                    format!(
+                        "BurstSequencer::new({})",
+                        p.as_subsequence(&dummy).unwrap().to_rust()
+                    )
+                } else {
+                    format!(
+                        "PatternSequencer::new({})",
+                        p.as_subsequence(&dummy).unwrap().to_rust()
+                    )
+                }
             } else {
                 panic!();
             }

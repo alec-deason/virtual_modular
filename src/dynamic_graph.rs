@@ -33,6 +33,9 @@ dynamic_nodes! {
         InstrumentTuner: InstrumentTuner::default(),
         ToneHoleFlute: ToneHoleFlute::default(),
         Add: Add,
+        Compressor: Compressor::default(),
+        SoftClip:SoftClip,
+        WeirdOsc: WeirdOsc::default(),
         Sub: Sub,
         Mul: Mul,
         Div: Div,
@@ -88,6 +91,8 @@ dynamic_nodes! {
         SympatheticString: SympatheticString::default(),
         WaveMesh: WaveMesh::default(),
         PennyWhistle: PennyWhistle::default(),
+        WeirdoDistortion: WeirdoDistortion,
+        Phaser: Phaser::default(),
         StereoIdentity: StereoIdentity,
         StringBodyFilter: StringBodyFilter::default()
     }
@@ -359,7 +364,13 @@ impl DynamicGraphBuilder {
         }
 
         fn mn_nested<'a>() -> Parser<'a, u8, RawSubsequence> {
-            node_name().map(|s| RawSubsequence::Nested(s))
+            (sym(b'^').opt() + node_name()).map(|(reversed, s)| {
+                if reversed.is_some() {
+                    RawSubsequence::Nested(s, true)
+                } else {
+                    RawSubsequence::Nested(s, false)
+                }
+            })
         }
 
         fn mn_bracketed_pattern<'a>() -> Parser<'a, u8, RawSubsequence> {
@@ -367,20 +378,31 @@ impl DynamicGraphBuilder {
         }
 
         fn sequencer<'a>() -> Parser<'a, u8, Vec<Line>> {
-            let name = node_name() - seq(b"=seq");
+            let name = node_name() + (seq(b"=seq") | seq(b"=burst")).convert(str::from_utf8);
             let r = name + mn_bracketed_pattern();
-            let parameter = sym(b'(') * expression() - sym(b')');
+            let parameter = sym(b'(') * expression() + (whitespace() * sym(b',') * whitespace() * expression()).opt() - sym(b')');
             let r = r + parameter.opt();
-            r.map(|((node_name, sub_sequence), clock)| {
+            r.map(|(((node_name, sequencer_type), sub_sequence), parameters)| {
                 let mut edges = Vec::with_capacity(3);
-                if let Some(clock) = clock {
+                if let Some((clock, maybe_burst_trigger)) = parameters {
                     edges.extend(clock.as_lines(node_name.clone(), 0));
+                    if let Some(burst_trigger) = maybe_burst_trigger {
+                        edges.extend(burst_trigger.as_lines(node_name.clone(), 1));
+                    }
                 }
-                edges.push(Line::Node(
-                    node_name,
-                    "pattern_sequencer".to_string(),
-                    Some(NodeParameters::PatternSequence(sub_sequence)),
-                ));
+                if sequencer_type == "=burst" {
+                    edges.push(Line::Node(
+                        node_name,
+                        "burst_sequencer".to_string(),
+                        Some(NodeParameters::PatternSequence(sub_sequence, true)),
+                    ));
+                } else {
+                    edges.push(Line::Node(
+                        node_name,
+                        "pattern_sequencer".to_string(),
+                        Some(NodeParameters::PatternSequence(sub_sequence, false)),
+                    ));
+                }
                 edges
             })
         }
@@ -931,7 +953,7 @@ impl DynamicGraph {
                 Line::Node(k, ty, parameters) => {
                     nodes.insert(k, ty.clone());
                     if ty == "pattern_sequencer" {
-                        if let Some(NodeParameters::PatternSequence(parameters)) = parameters {
+                        if let Some(NodeParameters::PatternSequence(parameters, _is_burst)) = parameters {
                             raw_sequencers.insert(k.clone(), parameters.clone());
                         } else {
                             panic!();
@@ -977,15 +999,19 @@ impl DynamicGraph {
                                 }
                             }
                             "pattern_sequencer" => {
-                                if let Some(NodeParameters::PatternSequence(parameters)) =
+                                if let Some(NodeParameters::PatternSequence(parameters, is_burst)) =
                                     parameters
                                 {
-                                    let n = PatternSequencer::new(
-                                        parameters.as_subsequence(&raw_sequencers).expect(
-                                            "There was a cycle in the sequence definitions!",
-                                        ),
+                                    let subsequence = parameters.as_subsequence(&raw_sequencers).expect(
+                                        "There was a cycle in the sequence definitions!",
                                     );
-                                    self.add_node(k.clone(), ty.clone(), n);
+                                    if *is_burst {
+                                        let n = BurstSequencer::new(subsequence);
+                                        self.add_node(k.clone(), ty.clone(), n);
+                                    } else {
+                                        let n = PatternSequencer::new(subsequence);
+                                        self.add_node(k.clone(), ty.clone(), n);
+                                    };
                                 } else {
                                     panic!();
                                 }
@@ -1080,7 +1106,7 @@ impl DynamicGraph {
 }
 #[derive(Clone, Debug)]
 pub enum NodeParameters {
-    PatternSequence(RawSubsequence),
+    PatternSequence(RawSubsequence, bool),
     ABCSequence(ABCSequence, String),
     Number(f32),
     AutomationSequence(Vec<Interpolation>),
@@ -1088,7 +1114,7 @@ pub enum NodeParameters {
 }
 #[derive(Clone, Debug)]
 pub enum RawSubsequence {
-    Nested(String),
+    Nested(String, bool),
     Item(f32, f32),
     Rest(f32),
     Tuplet(Vec<RawSubsequence>, usize),
@@ -1098,6 +1124,23 @@ pub enum RawSubsequence {
 }
 
 impl RawSubsequence {
+    pub fn reverse(&mut self) {
+        match self {
+            RawSubsequence::Tuplet(a, b) |
+            RawSubsequence::Iter(a, b) => {
+                a.reverse();
+                a.iter_mut().for_each(|s| s.reverse());
+            }
+            RawSubsequence::Choice(a, b) => {
+                a.iter_mut().for_each(|s| s.reverse());
+            }
+            RawSubsequence::ClockMultiplier(a, b) => {
+                a.reverse();
+            }
+            _ => ()
+        }
+    }
+
     pub fn as_subsequence(&self, defs: &HashMap<String, RawSubsequence>) -> Option<Subsequence> {
         self.as_subsequence_rec(defs, HashSet::new())
     }
@@ -1108,9 +1151,13 @@ impl RawSubsequence {
         mut seen: HashSet<String>,
     ) -> Option<Subsequence> {
         match self {
-            RawSubsequence::Nested(name) => {
+            RawSubsequence::Nested(name, reversed) => {
                 if seen.insert(name.clone()) {
                     defs.get(name).and_then(|s| {
+                        let mut s = s.clone();
+                        if *reversed {
+                            s.reverse();
+                        }
                         s.as_subsequence_rec(defs, seen.clone()).map(|s| {
                             let len = s.len();
                             if len > 1 {

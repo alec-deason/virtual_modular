@@ -648,17 +648,21 @@ impl Default for Sine {
 }
 
 impl Node for Sine {
-    type Input = U1;
+    type Input = U2;
     type Output = U1;
 
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let input = input[0];
+        let freq = input[0];
+        let reset = input[1];
 
         let mut r = [0.0; BLOCK_SIZE];
         for i in 0..BLOCK_SIZE {
             let v = (TAU as f64 * self.phase).sin();
-            self.phase += self.per_sample * input[i] as f64;
+            if reset[i] > 0.5 {
+                self.phase = 0.0;
+            }
+            self.phase += self.per_sample * freq[i] as f64;
             if self.phase > 1.0 {
                 self.phase -= 1.0;
             }
@@ -1159,6 +1163,10 @@ impl Simper {
 
         self.ic1eq = 2.0*v1 - self.ic1eq;
         self.ic2eq = 2.0*v2 - self.ic2eq;
+        if !(self.ic1eq.is_finite() && self.ic2eq.is_finite()) {
+            self.ic1eq = 0.0;
+            self.ic2eq = 0.0;
+        }
 
         (v1, v2)
     }
@@ -1569,6 +1577,20 @@ impl Subsequence {
         }
     }
 
+    fn reset(&mut self) {
+        match self {
+            Subsequence::Rest(clock) |
+            Subsequence::Item(_, clock) => *clock = 0.0,
+            Subsequence::Tuplet(sub_sequence, sub_idx) |
+            Subsequence::Iter(sub_sequence, sub_idx) |
+            Subsequence::Choice(sub_sequence, sub_idx) => {
+                sub_sequence.iter_mut().for_each(|s| s.reset());
+                *sub_idx = 0;
+            }
+            Subsequence::ClockMultiplier(sub_sequence, mul) => sub_sequence.reset(),
+        }
+    }
+
     fn current(
         &mut self,
         pulse: bool,
@@ -1681,6 +1703,46 @@ impl PatternSequencer {
             previous_value: 0.0,
         }
     }
+
+    fn tick(&mut self, trigger: f32) -> [f32; 5] {
+        let mut r_trig = 0.0;
+        let mut r_gate = 0.0;
+        let mut r_eoc = 0.0;
+        let mut r_value = 0.0;
+        let mut r_len = 0.0;
+
+        let mut pulse = false;
+        if trigger > 0.5 {
+            if !self.triggered {
+                self.triggered = true;
+                pulse = true;
+            }
+        } else {
+            self.triggered = false;
+        }
+
+        let (v, _, t, g, eoc, len) = self
+            .sequence
+            .current(pulse, 24.0 * self.sequence.len() as f32);
+        if g {
+            r_gate = 1.0;
+        }
+        if t {
+            r_trig = 1.0;
+            r_gate = 0.0;
+        }
+        if eoc {
+            r_eoc = 1.0;
+        }
+        self.previous_value = v.unwrap_or(self.previous_value);
+        r_value = self.previous_value;
+        r_len = len / 24.0;
+        [r_trig, r_gate, r_eoc, r_value, r_len]
+    }
+
+    fn reset(&mut self) {
+        self.sequence.reset();
+    }
 }
 
 impl Node for PatternSequencer {
@@ -1695,38 +1757,78 @@ impl Node for PatternSequencer {
         let mut r_len = [0.0f32; BLOCK_SIZE];
         for i in 0..BLOCK_SIZE {
             let trigger = input[0][i];
-            let mut pulse = false;
-            if trigger > 0.5 {
-                if !self.triggered {
-                    self.triggered = true;
-                    pulse = true;
-                }
-            } else {
-                self.triggered = false;
-            }
-
-            let (v, _, t, g, eoc, len) = self
-                .sequence
-                .current(pulse, 24.0 * self.sequence.len() as f32);
-            if g {
-                r_gate[i] = 1.0;
-            }
-            if t {
-                r_trig[i] = 1.0;
-                r_gate[i] = 0.0;
-            }
-            if eoc {
-                r_eoc[i] = 1.0;
-            }
-            self.previous_value = v.unwrap_or(self.previous_value);
-            r_value[i] = self.previous_value;
-            r_len[i] = len / 24.0;
+            let result = self.tick(trigger);
+            r_trig[i] = result[0];
+            r_gate[i] = result[1];
+            r_eoc[i] = result[2];
+            r_value[i] = result[3];
+            r_len[i] = result[4];
         }
         arr![[f32; BLOCK_SIZE]; r_value, r_trig, r_gate, r_eoc, r_len]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 8.0 / rate;
+    }
+}
+
+#[derive(Clone)]
+pub struct BurstSequencer {
+    seq: PatternSequencer,
+    burst_triggered: bool,
+    firing: bool,
+}
+
+impl BurstSequencer {
+    pub fn new(sequence: Subsequence) -> Self {
+        Self {
+            seq: PatternSequencer::new(sequence),
+            burst_triggered: false,
+            firing: false,
+        }
+    }
+}
+
+impl Node for BurstSequencer {
+    type Input = U2;
+    type Output = U5;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r_trig = [0.0f32; BLOCK_SIZE];
+        let mut r_gate = [0.0f32; BLOCK_SIZE];
+        let mut r_eoc = [0.0f32; BLOCK_SIZE];
+        let mut r_value = [0.0f32; BLOCK_SIZE];
+        let mut r_len = [0.0f32; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            if input[1][i] > 0.5 {
+                if !self.burst_triggered {
+                    self.burst_triggered = true;
+                    self.firing = true;
+                    self.seq.reset();
+                }
+            } else {
+                self.burst_triggered = false;
+            }
+            if self.firing {
+                let trigger = input[0][i];
+                let result = self.seq.tick(trigger);
+                r_trig[i] = result[0];
+                r_gate[i] = result[1];
+                r_eoc[i] = result[2];
+                    println!("{} {} {}", result[2], result[0], result[3]);
+                    println!("{:?}", self.seq.sequence);
+                if result[2] == 1.0 {
+                    self.firing = false;
+                }
+                r_value[i] = result[3];
+                r_len[i] = result[4];
+            }
+        }
+        arr![[f32; BLOCK_SIZE]; r_value, r_trig, r_gate, r_eoc, r_len]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.seq.set_sample_rate(rate);
     }
 }
 
@@ -3435,6 +3537,55 @@ impl Node for ABCSequence {
 
 #[derive(Clone, Default)]
 pub struct Compressor {
+    triggered: bool,
+    time: f32,
+    current: f32,
+    per_sample: f32,
+}
+
+impl Node for Compressor {
+    type Input = U5;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (attack, decay, threshold, ratio, signal) = (input[0], input[1], input[2], input[3], input[4]);
+        let mut r = [0.0; BLOCK_SIZE];
+        let mut eoc = [0.0f32; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            let attack = attack[i];
+            let decay = decay[i];
+            let threshold = threshold[i];
+            let ratio = ratio[i];
+            let signal = signal[i];
+            if signal.abs() > threshold {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.time = 0.0;
+                }
+            } else {
+                if self.triggered {
+                    self.triggered = false;
+                    self.time = 0.0;
+                }
+            }
+            self.time += self.per_sample;
+            let v = if self.triggered {
+                self.time.min(attack) / attack
+            } else {
+                let t = self.time.min(decay) / decay;
+                1.0 - t
+            };
+            self.current = self.current * 0.001 + (1.0-ratio*v) * 0.999;
+            assert!(self.current.is_finite());
+            r[i] = self.current;
+        }
+
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0 / rate;
+    }
 }
 
 #[derive(Clone, Default)]
@@ -3774,5 +3925,112 @@ impl Node for Reverb2 {
             r[i] = input as f32;
         }
         arr![[f32; BLOCK_SIZE]; r]
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct WeirdoDistortion;
+
+impl Node for WeirdoDistortion {
+    type Input = U2;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let input = input[0];
+
+        let mut r = [0.0; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            let input = input[i];
+            r[i] = input / (1.0+input.abs());
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+}
+
+#[derive(Clone)]
+pub struct Phaser {
+    aps: Vec<AllPass>
+}
+
+impl Default for Phaser {
+    fn default() -> Self {
+        Self {
+            aps: (0..16).map(|_| AllPass::default()).collect()
+        }
+    }
+}
+
+impl Node for Phaser {
+    type Input = U2;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let signal = input[0];
+        let feedback = input[1];
+        let mut r = [0.0; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            let mut s = signal[i] + self.aps[self.aps.len()-1].1 * feedback[i];
+            for ap in &mut self.aps {
+                s = ap.tick(1.0, s);
+            }
+            r[i] = s + signal[i];
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+pub struct WeirdOsc {
+    s: f32,
+    per_sample: f32
+}
+
+impl Node for WeirdOsc {
+    type Input = U2;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0];
+        let width = input[1];
+
+        let mut r = [0.0; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            let mut y = (TAU  * self.s).sin();
+            self.s += self.per_sample * freq[i];
+            if self.s > 1.0 {
+                self.s -= 1.0;
+            }
+            let width = width[i].max(0.01);
+            let radius = width/2.0;
+            let low = 0.5 - radius;
+            let high = 0.5 + radius;
+            if y < 0.0 {
+                loop {
+                    if y < -high {
+                        y += radius;
+                    } else if y > -low {
+                        y -= radius;
+                    } else  {
+                        break;
+                    }
+                }
+            } else {
+                loop {
+                    if y > high {
+                        y -= radius;
+                    } else if y < low {
+                        y += radius;
+                    } else  {
+                        break;
+                    }
+                }
+            }
+            r[i] = y;
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate;
     }
 }
