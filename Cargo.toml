@@ -1,15 +1,14 @@
 [package]
-name = "instruments"
+name = "virtual_modular"
 version = "0.1.0"
 authors = ["Alec Deason <alec@tinycountry.com>"]
-edition = "2018"
+edition = "2021"
 
 [features]
 instrument = []
 
 [dependencies]
 rand = "0.8.3"
-dyn-clone = "1.0.4"
 concat-idents = "1.1.2"
 pom = "3.2.0"
 uuid = { version="0.8.2", features=["v4"] }
@@ -18,16 +17,16 @@ glam = "0.16.0"
 ringbuf = "0.2.5"
 typenum = "1.13.0"
 generic-array = "0.14.4"
+virtual_modular_graph = { path = "./graph" }
+virtual_modular_core_nodes = { path = "./core_nodes", features=["abc"] }
+dyn-clone = "1.0.4"
 indexmap = "1.6.2"
-abc-parser = "0.3.0"
-pitch-detection = "0.2.0"
 
 [dev-dependencies]
 portmidi = "0.2.5"
 wmidi = "4.0.6"
 jack = "0.7.1"
 cpal = {version="0.13", features=["jack"]}
-code_generation_macro = { path = "./code_generation_macro" }
 
 [profile.release]
  debug = true

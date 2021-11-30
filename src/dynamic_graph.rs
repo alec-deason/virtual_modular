@@ -6,8 +6,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::simd_graph::{Node, Ports, BLOCK_SIZE};
-use crate::{simd_graph::*, voices::*};
+use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
+use virtual_modular_core_nodes::{
+    *,
+    abc::*,
+};
 use generic_array::{
     arr,
     typenum::{ToInt, U0, U1, U2},
@@ -30,7 +33,6 @@ macro_rules! dynamic_nodes {
 
 dynamic_nodes! {
     std_nodes {
-        InstrumentTuner: InstrumentTuner::default(),
         ToneHoleFlute: ToneHoleFlute::default(),
         Add: Add,
         Compressor: Compressor::default(),
@@ -78,7 +80,6 @@ dynamic_nodes! {
         EuclidianPulse: EuclidianPulse::default(),
         PulseOnChange: PulseOnChange::default(),
         Brownian: Brownian::default(),
-        LeadVoice: lead_voice(),
         MajorKeyMarkov: Markov::major_key_chords(),
         ScaleMajor: Quantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675, 32.703125]),
         ScaleDegreeMajor: DegreeQuantizer::new(&[16.351875, 18.35375, 20.601875, 21.826875, 24.5, 27.5, 30.8675]),

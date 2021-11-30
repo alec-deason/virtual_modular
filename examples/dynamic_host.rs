@@ -1,15 +1,12 @@
 #![feature(exact_size_is_empty)]
-extern crate code_generation_macro;
 use generic_array::typenum::*;
 use gilrs::{Event, EventType, Gilrs};
 use portmidi as pm;
 use ringbuf::{Consumer, Producer, RingBuffer};
 use std::{convert::TryFrom, sync::Arc};
 
-use ::instruments::{
+use ::virtual_modular::{
     dynamic_graph::{BoxedDynamicNode, DynamicGraph, DynamicGraphBuilder},
-    simd_graph::*,
-    voices::*,
     InstrumentSynth,
 };
 

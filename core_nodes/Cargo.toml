@@ -1,0 +1,17 @@
+[package]
+name = "virtual_modular_core_nodes"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+abc = ["abc-parser"]
+tuning = ["pitch-detection"]
+
+[dependencies]
+dyn-clone = "1.0.4"
+generic-array = "0.14.4"
+rand = "0.8.4"
+virtual_modular_graph = { path = "../graph" }
+abc-parser = { version="0.3.0", optional=true }
+pitch-detection = { version = "0.2.0", optional=true }
+indexmap = "1.6.2"

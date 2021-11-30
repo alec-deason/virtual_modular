@@ -2,18 +2,16 @@
 #[macro_use]
 pub mod dynamic_graph;
 pub mod code_generator;
-pub mod simd_graph;
-pub mod voices;
 use generic_array::{
     arr,
     typenum::{U0, U2},
 };
-use simd_graph::{Ports, BLOCK_SIZE};
+use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 use std::{cell::RefCell, collections::HashMap};
 
 pub struct InstrumentSynth {
-    synth: RefCell<Box<dyn simd_graph::Node<Input = U0, Output = U2>>>,
+    synth: RefCell<Box<dyn Node<Input = U0, Output = U2>>>,
     synth_sample: (usize, Ports<U2>),
     float_parameters: HashMap<String, Box<dyn FnMut(f64)>>,
     float_float_parameters: HashMap<String, Box<dyn FnMut(f64, f64)>>,
@@ -42,7 +40,7 @@ impl InstrumentSynthBuilder {
 
     pub fn build_with_synth(
         self,
-        synth: impl simd_graph::Node<Input = U0, Output = U2> + 'static,
+        synth: impl Node<Input = U0, Output = U2> + 'static,
     ) -> InstrumentSynth {
         InstrumentSynth {
             synth: RefCell::new(Box::new(synth)),
@@ -76,7 +74,7 @@ impl InstrumentSynth {
 
     pub fn replace_synth(
         &self,
-        mut synth: impl simd_graph::Node<Input = U0, Output = U2> + 'static,
+        mut synth: impl Node<Input = U0, Output = U2> + 'static,
     ) {
         synth.set_sample_rate(self.sample_rate);
         let synth = Box::new(synth);

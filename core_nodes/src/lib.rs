@@ -1,88 +1,25 @@
-use dyn_clone::DynClone;
 use generic_array::{
     arr,
     sequence::{Concat, Split},
     typenum::*,
-    ArrayLength, GenericArray,
+    ArrayLength,
 };
 use rand::prelude::*;
 use std::{
-    collections::HashMap,
     cell::RefCell,
     f32::consts::{PI, TAU},
     marker::PhantomData,
     sync::{Arc, Mutex},
 };
+use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
-pub const BLOCK_SIZE: usize = 32;
+#[cfg(feature = "abc")]
+pub mod abc;
+#[cfg(feature = "tuning")]
+pub mod tuning;
+pub mod arithmetic;
 
-pub type Ports<N> = GenericArray<[f32; BLOCK_SIZE], N>;
-
-pub trait Node: DynClone {
-    type Input: ArrayLength<[f32; BLOCK_SIZE]>;
-    type Output: ArrayLength<[f32; BLOCK_SIZE]>;
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output>;
-    fn post_process(&mut self) {}
-    fn set_sample_rate(&mut self, rate: f32) {}
-}
-dyn_clone::clone_trait_object!(<A,B> Node<Input=A, Output=B>);
-
-#[derive(Copy, Clone)]
-pub struct Mul;
-impl Node for Mul {
-    type Input = U2;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            r[i] = input[0][i] * input[1][i];
-        }
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-}
-#[derive(Copy, Clone)]
-pub struct Div;
-impl Node for Div {
-    type Input = U2;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            r[i] = input[0][i] / input[1][i];
-        }
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-}
-#[derive(Copy, Clone)]
-pub struct Add;
-impl Node for Add {
-    type Input = U2;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            r[i] = input[0][i] + input[1][i];
-        }
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-}
-#[derive(Copy, Clone)]
-pub struct Sub;
-impl Node for Sub {
-    type Input = U2;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            r[i] = input[0][i] - input[1][i];
-        }
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-}
+pub use arithmetic::*;
 
 #[derive(Clone)]
 pub struct Stereo;
@@ -231,30 +168,6 @@ impl Node for PulseOnLoad {
             r[0] = 1.0;
             arr![[f32; BLOCK_SIZE]; r]
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct RingBufConstant<A: ArrayLength<[f32; BLOCK_SIZE]>>(
-    Arc<ringbuf::Consumer<(usize, f32)>>,
-    Ports<A>,
-);
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> RingBufConstant<A> {
-    pub fn new() -> (Self, ringbuf::Producer<(usize, f32)>) {
-        let buf = ringbuf::RingBuffer::new(100);
-        let (p, c) = buf.split();
-        (RingBufConstant(Arc::new(c), Default::default()), p)
-    }
-}
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for RingBufConstant<A> {
-    type Input = U0;
-    type Output = A;
-    #[inline]
-    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
-        while let Some((i, v)) = Arc::get_mut(&mut self.0).and_then(|b| b.pop()) {
-            self.1[i] = [v; BLOCK_SIZE];
-        }
-        self.1.clone()
     }
 }
 #[derive(Clone)]
@@ -3387,153 +3300,6 @@ impl Node for PennyWhistle {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ABCSequence {
-    line: Vec<abc_parser::datatypes::MusicSymbol>,
-    key: HashMap<char, abc_parser::datatypes::Accidental>,
-    idx: usize,
-    clock: u32,
-    sounding: Option<f32>,
-    current_duration: f32,
-    triggered: bool,
-}
-
-impl ABCSequence {
-    pub fn new(tune: &str) -> Option<Self> {
-        let parsed = abc_parser::abc::tune(tune).ok()?;
-        let key = parsed.header.info.iter().find(|f| f.0 == 'K').map(|f| f.1.clone()).unwrap_or("C".to_string());
-        let key:HashMap<_, _> = match key.as_str() {
-            "C" => vec![],
-            "G" => vec![('F', abc_parser::datatypes::Accidental::Sharp)],
-            _ => panic!()
-        }.into_iter().collect();
-        let mut line:Vec<_> = parsed.body.unwrap().music.into_iter().map(|l| l.symbols.clone()).flatten().collect();
-        line.retain(|s| {
-            match s {
-                abc_parser::datatypes::MusicSymbol::Rest(abc_parser::datatypes::Rest::Note(length)) => true,
-                abc_parser::datatypes::MusicSymbol::Note { length, .. } => true,
-                _ => false,
-            }
-        });
-        let mut r = Self {
-            line,
-            key,
-            idx: 0,
-            clock: 0,
-            current_duration: 0.0,
-            sounding: None,
-            triggered: false,
-        };
-        let dur = r.duration(0);
-        r.clock = dur;
-        r.current_duration = dur as f32 / 24.0;
-        r.sounding = r.freq(0);
-        Some(r)
-    }
-}
-
-fn accidental_to_freq_multiplier(accidental: &abc_parser::datatypes::Accidental) -> f32 {
-    let semitones = match accidental {
-        abc_parser::datatypes::Accidental::Sharp => 1,
-        abc_parser::datatypes::Accidental::Flat => -1,
-        abc_parser::datatypes::Accidental::Natural => 0,
-        abc_parser::datatypes::Accidental::DoubleSharp => 2,
-        abc_parser::datatypes::Accidental::DoubleFlat => -2,
-    };
-    2.0f32.powf((semitones * 100) as f32 / 1200.0)
-}
-
-impl ABCSequence {
-    fn freq(&self, idx: usize) -> Option<f32> {
-        if let abc_parser::datatypes::MusicSymbol::Note {
-            note,
-            octave,
-            length,
-            accidental,
-            ..
-        } = self.line[idx]
-        {
-            if accidental.is_some() {
-                todo!()
-            }
-            let mut base = match note {
-                abc_parser::datatypes::Note::C => 16.35,
-                abc_parser::datatypes::Note::D => 18.35,
-                abc_parser::datatypes::Note::E => 20.60,
-                abc_parser::datatypes::Note::F => 21.83,
-                abc_parser::datatypes::Note::G => 24.50,
-                abc_parser::datatypes::Note::A => 27.50,
-                abc_parser::datatypes::Note::B => 30.87,
-            };
-            let accidental = match note {
-                abc_parser::datatypes::Note::C => self.key.get(&'C'),
-                abc_parser::datatypes::Note::D => self.key.get(&'D'),
-                abc_parser::datatypes::Note::E => self.key.get(&'E'),
-                abc_parser::datatypes::Note::F => self.key.get(&'F'),
-                abc_parser::datatypes::Note::G => self.key.get(&'G'),
-                abc_parser::datatypes::Note::A => self.key.get(&'A'),
-                abc_parser::datatypes::Note::B => self.key.get(&'B'),
-            };
-            if let Some(accidental) = accidental {
-                base *= accidental_to_freq_multiplier(accidental);
-            }
-            Some(base * 2.0f32.powi(octave as i32 + 2))
-        } else {
-            panic!()
-        }
-    }
-
-    fn duration(&self, idx: usize) -> u32 {
-        match self.line[idx] {
-            abc_parser::datatypes::MusicSymbol::Rest(abc_parser::datatypes::Rest::Note(length)) => {
-                unimplemented!()
-            }
-            abc_parser::datatypes::MusicSymbol::Note { length, .. } => (length * 24.0) as u32,
-            _ => panic!("{:?}", self.line[idx]),
-        }
-    }
-}
-
-impl Node for ABCSequence {
-    type Input = U1;
-    type Output = U4;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let trigger = input[0];
-
-        let mut r_freq = [0.0f32; BLOCK_SIZE];
-        let mut r_gate = [0.0f32; BLOCK_SIZE];
-        let mut r_eoc = [0.0f32; BLOCK_SIZE];
-        let mut r_dur = [0.0f32; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            if trigger[i] > 0.5  {
-                if !self.triggered {
-                    self.triggered = true;
-                    self.clock -= 1;
-                }
-            } else {
-                self.triggered = false;
-            }
-            if self.clock == 0 {
-                self.idx = self.idx + 1;
-                if self.idx >= self.line.len() {
-                    self.idx = 0;
-                    r_eoc[i] = 1.0;
-                }
-                self.clock = self.duration(self.idx);
-                self.current_duration = self.clock as f32 / 24.0;
-                self.sounding = self.freq(self.idx);
-                r_gate[i] = 0.0;
-            } else {
-                r_gate[i] = if self.sounding.is_some() { 1.0 } else { 0.0 };
-            }
-            r_freq[i] = self.sounding.unwrap_or(0.0);
-            r_dur[i] = self.current_duration;
-        }
-
-        arr![[f32; BLOCK_SIZE]; r_freq, r_gate, r_eoc, r_dur]
-    }
-}
 
 #[derive(Clone, Default)]
 pub struct Compressor {
@@ -3659,90 +3425,6 @@ impl Node for TapsAndStrikes {
     }
 }
 
-use pitch_detection::detector::mcleod::McLeodDetector;
-use pitch_detection::detector::PitchDetector;
-#[derive(Clone)]
-pub struct InstrumentTuner {
-    rate: usize,
-    buffer: [f32; 1024*10],
-    corrections: Vec<(f32, f32)>,
-    sweep_frequencies: Vec<(f32, f32)>,
-    fill_idx: usize,
-    test_idx: usize,
-    sweep_idx: usize,
-    sweep_clock: f32,
-}
-
-impl Default for InstrumentTuner {
-    fn default() -> Self {
-        let mut sweep_frequencies = vec![(160.0, 0.0)];
-        while sweep_frequencies[sweep_frequencies.len()-1].0 < 2000.0 {
-            let new_freq = sweep_frequencies[sweep_frequencies.len()-1].0 + 100.123;
-            sweep_frequencies.push((new_freq, 0.0));
-        }
-        let mut corrections = vec![(0.0, 0.0), (-100.0, 0.0)];
-        while corrections[corrections.len()-1].0 < 100.0 {
-            let new_freq = corrections[corrections.len()-1].0 + 1.0;
-            corrections.push((new_freq, 0.0));
-        }
-        Self {
-            rate: 44100,
-            buffer: [0.0; 1024*10],
-            fill_idx: 0,
-            sweep_frequencies,
-            sweep_idx: 0,
-            test_idx: 0,
-            corrections,
-            sweep_clock: 1.0,
-        }
-    }
-}
-
-impl Node for InstrumentTuner {
-    type Input = U1;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            self.sweep_clock -= 1.0/self.rate as f32;
-            if self.sweep_clock <= 0.0 {
-                if self.fill_idx == self.buffer.len() {
-                    const POWER_THRESHOLD : f32 = 5.0;
-                    const CLARITY_THRESHOLD : f32 = 0.7;
-                    let mut detector = McLeodDetector::new(1024*10, (1024*10)/2);
-
-                    let pitch = detector.get_pitch(&self.buffer, self.rate, POWER_THRESHOLD, CLARITY_THRESHOLD).unwrap();
-                    self.fill_idx = 0;
-                    let error = (pitch.frequency - self.sweep_frequencies[self.sweep_idx].0).abs();
-                    self.corrections[self.test_idx].1 = error;
-                    self.sweep_clock = 0.1;
-                    if self.test_idx == self.corrections.len() -1 {
-                        let best = self.corrections.iter().min_by_key(|(_, e)| (e * 10000.0) as i32).unwrap_or(&(0.0, 0.0)).0;
-                        self.sweep_frequencies[self.sweep_idx].1 = best;
-                        self.sweep_idx += 1;
-                        self.test_idx = 0;
-                    } else {
-                        self.test_idx += 1;
-                    }
-                    if self.sweep_idx == self.sweep_frequencies.len() -1 && self.test_idx == self.corrections.len() - 1 {
-                        println!("{:?}", self.sweep_frequencies);
-                        self.sweep_idx = 0;
-                    }
-                } else {
-                    self.buffer[self.fill_idx] = input[0][i];
-                    self.fill_idx += 1;
-                }
-            }
-            r[i] = self.sweep_frequencies[self.sweep_idx].0 + self.corrections[self.test_idx].0;
-        }
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.rate = rate as usize;
-    }
-}
 
 #[derive(Clone)]
 pub struct ToneHoleFlute {
