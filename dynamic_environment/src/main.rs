@@ -1,6 +1,8 @@
 #![feature(exact_size_is_empty)]
 use ringbuf::{Consumer, RingBuffer};
-use std::{convert::TryFrom, sync::Arc};
+#[cfg(feauture = "midi")]
+use std::convert::TryFrom;
+use std::sync::Arc;
 
 use virtual_modular::InstrumentSynth;
 use virtual_modular_dynamic_environment::DynamicGraphBuilder;
@@ -102,7 +104,8 @@ fn launch_midi_listener(graph: &DynamicGraph) {
         let mut current_voice = 0;
 
         let (client, _status) =
-            jack::Client::new("virtual_modular_midi", jack::ClientOptions::NO_START_SERVER).unwrap();
+            jack::Client::new("virtual_modular_midi", jack::ClientOptions::NO_START_SERVER)
+                .unwrap();
         let shower = client
             .register_port("midi_in", jack::MidiIn::default())
             .unwrap();

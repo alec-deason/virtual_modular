@@ -2,7 +2,6 @@ use generic_array::{
     arr,
     sequence::{Concat, Split},
     typenum::*,
-    ArrayLength,
 };
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 

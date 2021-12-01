@@ -1,3 +1,8 @@
+#![feature(hash_drain_filter)]
+
+#[cfg(feature = "code_generation")]
+pub mod code_generation;
+
 use std::convert::{TryFrom, TryInto};
 
 pub fn parse(data: &str) -> Result<Vec<Line>, String> {

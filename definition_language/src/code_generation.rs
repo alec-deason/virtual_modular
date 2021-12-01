@@ -1,9 +1,7 @@
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
-use crate::dynamic_graph::{
-    DynamicGraphBuilder, DynamicNode, Line, NodeParameters,
-};
+use crate::Line;
 
 #[derive(Clone, Debug)]
 enum Edge {
@@ -28,7 +26,7 @@ struct ResolvedEdge {
     dst_port: u32,
     code: String,
 }
-pub fn to_rust(builder: &DynamicGraphBuilder, input_code: &[Line]) -> (String, u32) {
+pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (String, u32) {
     let mut nodes = HashMap::new();
     nodes.insert("output".to_string(), ("Output()".to_string(), 2, 0));
 
@@ -40,7 +38,7 @@ pub fn to_rust(builder: &DynamicGraphBuilder, input_code: &[Line]) -> (String, u
         if let Line::Node(node_name, node_type, parameters) = line {
             nodes.insert(
                 node_name.to_string(),
-                code_for_node(node_type.to_string(), parameters.clone(), builder),
+                code_for_node(node_type.to_string(), parameters.clone(), node_templates),
             );
             input_count.insert(node_name.clone(), 0);
             println!("init_node: {}", node_name);
@@ -251,7 +249,7 @@ pub fn to_rust(builder: &DynamicGraphBuilder, input_code: &[Line]) -> (String, u
 fn code_for_node(
     node_type: String,
     parameters: Option<NodeParameters>,
-    builder: &DynamicGraphBuilder,
+    node_templates: &HashMap<String, String>,
 ) -> (String, u32, u32) {
     let (input_port_count, output_port_count) = {
         match node_type.as_str() {
@@ -263,11 +261,9 @@ fn code_for_node(
             "automation" => (0, 1),
             "Constant" => (0, 1),
             _ => {
-                let n = builder
-                    .templates
+                let n = node_templates
                     .get(node_type.as_str())
                     .expect(node_type.as_str())
-                    .0
                     .clone();
                 (n.input_len() as u32, n.output_len() as u32)
             }

@@ -3,6 +3,9 @@ name = "virtual_modular_definition_language"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+code_generation = ["indexmap"]
+
 
 [dependencies]
 dyn-clone = "1.0.4"
@@ -10,3 +13,4 @@ uuid = { version = "0.8.2", features = ["v4"] }
 pom = "3.2.0"
 virtual_modular_graph = { path = "../graph" }
 generic-array = "0.14.4"
+indexmap = { version = "1", optional = true }

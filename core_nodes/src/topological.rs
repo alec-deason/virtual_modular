@@ -4,9 +4,8 @@ use generic_array::{
     arr,
     sequence::{Concat, Split},
     typenum::*,
-    ArrayLength,
 };
-use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
+use virtual_modular_graph::{Node, PortCount, Ports, BLOCK_SIZE};
 
 #[derive(Clone)]
 pub struct Stereo;
@@ -45,8 +44,8 @@ impl<A, B, C, D> Node for Branch<A, B>
 where
     A: Node<Input = B::Input, Output = C> + Clone,
     B: Node + Clone,
-    C: ArrayLength<[f32; BLOCK_SIZE]> + std::ops::Add<B::Output, Output = D>,
-    D: ArrayLength<[f32; BLOCK_SIZE]>,
+    C: PortCount + std::ops::Add<B::Output, Output = D>,
+    D: PortCount,
 {
     type Input = A::Input;
     type Output = <A::Output as std::ops::Add<B::Output>>::Output;
@@ -64,13 +63,13 @@ where
 }
 
 #[derive(Clone)]
-pub struct Pass<A: ArrayLength<[f32; BLOCK_SIZE]>>(A);
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Default for Pass<A> {
+pub struct Pass<A: PortCount>(A);
+impl<A: PortCount> Default for Pass<A> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for Pass<A> {
+impl<A: PortCount> Node for Pass<A> {
     type Input = A;
     type Output = A;
     #[inline]
@@ -79,13 +78,13 @@ impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for Pass<A> {
     }
 }
 #[derive(Clone)]
-pub struct Sink<A: ArrayLength<[f32; BLOCK_SIZE]>>(PhantomData<A>);
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Default for Sink<A> {
+pub struct Sink<A: PortCount>(PhantomData<A>);
+impl<A: PortCount> Default for Sink<A> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for Sink<A> {
+impl<A: PortCount> Node for Sink<A> {
     type Input = A;
     type Output = U0;
     #[inline]
@@ -110,9 +109,9 @@ impl<A, B, C, D, E> Node for Stack<A, B, D>
 where
     A: Node<Input = C, Output = E> + Clone,
     B: Node + Clone,
-    C: ArrayLength<[f32; BLOCK_SIZE]> + std::ops::Add<B::Input, Output = D>,
-    D: ArrayLength<[f32; BLOCK_SIZE]> + std::ops::Sub<C, Output = B::Input>,
-    E: ArrayLength<[f32; BLOCK_SIZE]> + std::ops::Add<B::Output, Output = D>,
+    C: PortCount + std::ops::Add<B::Input, Output = D>,
+    D: PortCount + std::ops::Sub<C, Output = B::Input>,
+    E: PortCount + std::ops::Add<B::Output, Output = D>,
 {
     type Input = <A::Input as std::ops::Add<B::Input>>::Output;
     type Output = <A::Output as std::ops::Add<B::Output>>::Output;
@@ -129,14 +128,14 @@ where
 }
 
 #[derive(Clone)]
-pub struct ArcConstant<A: ArrayLength<[f32; BLOCK_SIZE]>>(pub Arc<RefCell<Ports<A>>>);
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> ArcConstant<A> {
+pub struct ArcConstant<A: PortCount>(pub Arc<RefCell<Ports<A>>>);
+impl<A: PortCount> ArcConstant<A> {
     pub fn new(a: Ports<A>) -> (Self, Arc<RefCell<Ports<A>>>) {
         let cell = Arc::new(RefCell::new(a));
         (Self(Arc::clone(&cell)), cell)
     }
 }
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for ArcConstant<A> {
+impl<A: PortCount> Node for ArcConstant<A> {
     type Input = U0;
     type Output = A;
     #[inline]
@@ -146,14 +145,14 @@ impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for ArcConstant<A> {
 }
 
 #[derive(Clone)]
-pub struct Bridge<A: ArrayLength<[f32; BLOCK_SIZE]>>(pub Arc<RefCell<Ports<A>>>);
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Bridge<A> {
+pub struct Bridge<A: PortCount>(pub Arc<RefCell<Ports<A>>>);
+impl<A: PortCount> Bridge<A> {
     pub fn new() -> (Self, ArcConstant<A>) {
         let (constant, cell) = ArcConstant::new(Default::default());
         (Self(cell), constant)
     }
 }
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for Bridge<A> {
+impl<A: PortCount> Node for Bridge<A> {
     type Input = A;
     type Output = A;
     #[inline]
@@ -186,14 +185,14 @@ impl Node for StereoIdentity {
 }
 
 #[derive(Clone)]
-pub struct IndexPort<A: ArrayLength<[f32; BLOCK_SIZE]>>(usize, PhantomData<A>);
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> IndexPort<A> {
+pub struct IndexPort<A: PortCount>(usize, PhantomData<A>);
+impl<A: PortCount> IndexPort<A> {
     pub fn new(port: usize) -> Self {
         IndexPort(port, Default::default())
     }
 }
 
-impl<A: ArrayLength<[f32; BLOCK_SIZE]>> Node for IndexPort<A> {
+impl<A: PortCount> Node for IndexPort<A> {
     type Input = A;
     type Output = U1;
     #[inline]
