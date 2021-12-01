@@ -1,12 +1,22 @@
-use ::instruments::{simd_graph::*, InstrumentSynth};
+use virtual_modular::InstrumentSynth;
+use virtual_modular_core_nodes::*;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 fn main() {
-    let mut builder = InstrumentSynth::builder();
+    // Make a sine oscillator running at 220 hz
+    let osc = Pipe(Branch(Constant(220.0), Constant(0.0)), Sine::default());
 
-    let mixer = Pipe(Pipe(Pipe(Constant(1.0), Stereo), Add), Stereo);
-    let mut synth = builder.build_with_synth(mixer);
+    // Duplicate it across two channels to make a stereo signal
+    let sound = Pipe(osc, Stereo);
+
+    // Construct the synthesizer from that stereo generator
+    let builder = InstrumentSynth::builder();
+    let mut synth = builder.build_with_synth(sound);
+
+    // Below this is mostly just cpal boilerplate to play sound
+    // The pieces worth paying attention to are the calls to
+    // synth.set_sample_rate and synth.process
 
     let cpal_host = cpal::default_host();
 
@@ -15,7 +25,7 @@ fn main() {
 
     let sample_rate = config.sample_rate().0 as f32;
     synth.set_sample_rate(sample_rate);
-    let cpal_stream = match config.sample_format() {
+    let _cpal_stream = match config.sample_format() {
         cpal::SampleFormat::F32 => run::<f32>(&device, &config.into(), synth),
         cpal::SampleFormat::I16 => run::<i16>(&device, &config.into(), synth),
         cpal::SampleFormat::U16 => run::<u16>(&device, &config.into(), synth),
