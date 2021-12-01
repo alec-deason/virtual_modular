@@ -18,10 +18,82 @@ fn main() {
     {
         DynamicGraphBuilder::default().parse(&synth_data).unwrap()
     } else {
-        panic!()
+        panic!("Could not read synth definition file {:?}", synth_path)
     };
 
-    let inputs = Arc::clone(&graph.external_inputs);
+    #[cfg(feauture = "midi")]
+    launch_midi_listener(&graph);
+
+    let reload_data = Arc::clone(&graph.reload_data);
+    let watch_list = Arc::clone(&graph.watch_list);
+
+    let mut synth = builder.build_with_synth(graph);
+
+    let cpal_host = cpal::default_host();
+
+    let device = cpal_host.default_output_device().unwrap();
+    let config = device.default_output_config().unwrap();
+
+    let sample_rate = config.sample_rate().0 as f32;
+    synth.set_sample_rate(sample_rate);
+
+    let rb = RingBuffer::<(f32, f32)>::new(4048);
+    let (mut prod, cons) = rb.split();
+
+    std::thread::spawn(move || {
+        let mut left = vec![0.0; 32];
+        let mut right = vec![0.0; 32];
+        loop {
+            synth.process(&mut left, &mut right);
+            let mut to_push = left.iter().zip(&right).map(|(l, r)| (*l, *r));
+            loop {
+                prod.push_iter(&mut to_push);
+                if to_push.is_empty() {
+                    break;
+                } else {
+                    std::thread::sleep(std::time::Duration::from_secs_f32(10.0 / 44000.0));
+                }
+            }
+        }
+    });
+
+    let _cpal_stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => run::<f32>(&device, &config.into(), cons),
+        cpal::SampleFormat::I16 => run::<i16>(&device, &config.into(), cons),
+        cpal::SampleFormat::U16 => run::<u16>(&device, &config.into(), cons),
+    };
+
+    let mut last_change = std::time::SystemTime::now();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if let Some(synth_path) = &synth_path {
+            let mut ps: Vec<_> = watch_list.lock().unwrap().iter().cloned().collect();
+            ps.push(synth_path.to_string());
+            let mut needs_reload = false;
+            for p in ps {
+                if let Ok(metadata) = std::fs::metadata(&p) {
+                    if let Ok(modified) = metadata.modified() {
+                        if modified > last_change {
+                            needs_reload = true;
+                            last_change = modified;
+                            break;
+                        }
+                    }
+                }
+            }
+            if needs_reload {
+                reload_data
+                    .lock()
+                    .unwrap()
+                    .replace(std::fs::read_to_string(synth_path).unwrap());
+            }
+        }
+    }
+}
+
+#[cfg(feauture = "midi")]
+fn launch_midi_listener(graph: &DynamicGraph) {
+    let inputs = Arc::clone(graph.external_inputs);
     std::thread::spawn(move || {
         let mut voices = std::collections::HashMap::new();
         for c in 0..10 {
@@ -30,9 +102,9 @@ fn main() {
         let mut current_voice = 0;
 
         let (client, _status) =
-            jack::Client::new("rust_jack_show_midi", jack::ClientOptions::NO_START_SERVER).unwrap();
+            jack::Client::new("virtual_modular_midi", jack::ClientOptions::NO_START_SERVER).unwrap();
         let shower = client
-            .register_port("rust_midi_shower", jack::MidiIn::default())
+            .register_port("midi_in", jack::MidiIn::default())
             .unwrap();
         let cback = move |_: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
             {
@@ -201,72 +273,6 @@ fn main() {
             std::thread::sleep(std::time::Duration::new(10, 0));
         }
     });
-
-    let reload_data = Arc::clone(&graph.reload_data);
-    let watch_list = Arc::clone(&graph.watch_list);
-
-    let mut synth = builder.build_with_synth(graph);
-
-    let cpal_host = cpal::default_host();
-
-    let device = cpal_host.default_output_device().unwrap();
-    let config = device.default_output_config().unwrap();
-
-    let sample_rate = config.sample_rate().0 as f32;
-    synth.set_sample_rate(sample_rate);
-
-    let rb = RingBuffer::<(f32, f32)>::new(4048);
-    let (mut prod, cons) = rb.split();
-
-    std::thread::spawn(move || {
-        let mut left = vec![0.0; 32];
-        let mut right = vec![0.0; 32];
-        loop {
-            synth.process(&mut left, &mut right);
-            let mut to_push = left.iter().zip(&right).map(|(l, r)| (*l, *r));
-            loop {
-                prod.push_iter(&mut to_push);
-                if to_push.is_empty() {
-                    break;
-                } else {
-                    std::thread::sleep(std::time::Duration::from_secs_f32(10.0 / 44000.0));
-                }
-            }
-        }
-    });
-
-    let _cpal_stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => run::<f32>(&device, &config.into(), cons),
-        cpal::SampleFormat::I16 => run::<i16>(&device, &config.into(), cons),
-        cpal::SampleFormat::U16 => run::<u16>(&device, &config.into(), cons),
-    };
-
-    let mut last_change = std::time::SystemTime::now();
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        if let Some(synth_path) = &synth_path {
-            let mut ps: Vec<_> = watch_list.lock().unwrap().iter().cloned().collect();
-            ps.push(synth_path.to_string());
-            let mut needs_reload = false;
-            for p in ps {
-                if let Ok(metadata) = std::fs::metadata(&p) {
-                    if let Ok(modified) = metadata.modified() {
-                        if modified > last_change {
-                            needs_reload = true;
-                            last_change = modified;
-                            break;
-                        }
-                    }
-                }
-            }
-            if needs_reload {
-                reload_data
-                    .lock()
-                    .unwrap()
-                    .replace(std::fs::read_to_string(synth_path).unwrap());
-            }
-        }
-    }
 }
 
 fn run<T>(
