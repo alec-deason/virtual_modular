@@ -72,6 +72,8 @@ dynamic_nodes! {
         Bg: BernoulliGate::default(),
         C: Identity,
         QuadSwitch: QuadSwitch::default(),
+        Seq: PatternSequencer::default(),
+        Burst: BurstSequencer::default(),
         TapsAndStrikes: TapsAndStrikes::default(),
         Folder: Folder,
         EuclidianPulse: EuclidianPulse::default(),
@@ -129,6 +131,7 @@ pub trait DynamicNode: DynClone {
     fn get(&self, i: usize) -> [f32; BLOCK_SIZE];
     fn set(&mut self, i: usize, v: [f32; BLOCK_SIZE]);
     fn add(&mut self, i: usize, v: [f32; BLOCK_SIZE]);
+    fn set_static_parameters(&mut self, _parameters: &str) -> Result<(), String> { Ok(()) }
     fn set_sample_rate(&mut self, rate: f32);
 }
 dyn_clone::clone_trait_object!(DynamicNode);
@@ -168,6 +171,10 @@ impl<
             .iter_mut()
             .zip(&v)
             .for_each(|(r, v)| *r += *v);
+    }
+
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        self.0.set_static_parameters(parameters)
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -265,6 +272,10 @@ impl DynamicNode for BoxedDynamicNode {
 
     fn add(&mut self, i: usize, v: [f32; BLOCK_SIZE]) {
         self.0.add(i, v);
+    }
+
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        self.0.set_static_parameters(parameters)
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
@@ -461,10 +472,19 @@ impl DynamicGraph {
                                 if let Some(template) = self.builder.templates.get(ty) {
                                     let mut n = template.0.clone();
                                     n.set_sample_rate(self.sample_rate);
+                                    if let Some(p) = static_parameters {
+                                        n.set_static_parameters(p)?;
+                                    }
                                     self.add_boxed_node(name.clone(), ty.clone(), n);
                                 } else {
                                     return Err(format!("No definition for {}", ty));
                                 }
+                            }
+                        }
+                    } else {
+                        if let Some(p) = static_parameters {
+                            if let Some(n) = self.nodes.get_mut(name) {
+                                n.0.set_static_parameters(p)?;
                             }
                         }
                     }

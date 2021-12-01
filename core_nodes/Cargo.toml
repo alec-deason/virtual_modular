@@ -15,3 +15,4 @@ virtual_modular_graph = { path = "../graph" }
 abc-parser = { version="0.3.0", optional=true }
 pitch-detection = { version = "0.2.0", optional=true }
 indexmap = "1.6.2"
+pom = "3.2.0"
