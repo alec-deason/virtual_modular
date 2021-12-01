@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 #[derive(Clone, Default)]
@@ -42,7 +39,7 @@ impl Node for Impulse {
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let input = input[0];
         let mut r = [0.0f32; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let gate = input[i];
             let mut switched = false;
             if !self.1 && gate > self.0 {
@@ -52,7 +49,7 @@ impl Node for Impulse {
                 self.1 = false;
             }
             if switched {
-                r[i] = 1.0;
+                *r = 1.0;
             }
         }
         arr![[f32; BLOCK_SIZE]; r]
@@ -70,7 +67,7 @@ impl Node for PulseDivider {
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let (division, gate) = (input[0], input[1]);
         let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let gate = gate[i];
             let division = division[i].round() as u64;
             if gate > 0.5 {
@@ -82,7 +79,7 @@ impl Node for PulseDivider {
                 self.1 = false;
             }
             if self.1 && division > 0 && self.0 % division == 0 {
-                r[i] = gate;
+                *r = gate;
             }
         }
         arr![[f32; BLOCK_SIZE]; r]
@@ -103,11 +100,11 @@ impl Node for PulseOnChange {
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut r = [0.0f32; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let v = input[0][i];
             if v != self.0 {
                 self.0 = v;
-                r[i] = 1.0;
+                *r = 1.0;
             }
         }
         arr![[f32; BLOCK_SIZE]; r]

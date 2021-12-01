@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use std::f32::consts::PI;
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
@@ -9,7 +6,7 @@ use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 pub struct AllPass(f32, f32);
 
 impl AllPass {
-    fn tick(&mut self, scale: f32, signal: f32) -> f32 {
+    pub fn tick(&mut self, scale: f32, signal: f32) -> f32 {
         let v = scale * signal + self.0 - scale * self.1;
         self.0 = signal;
         self.1 = v;
@@ -48,26 +45,26 @@ pub struct Simper {
     sample_rate: f32,
 }
 impl Simper {
-    fn set_parameters(&mut self, cutoff: f32, resonance: f32) {
+    pub fn set_parameters(&mut self, cutoff: f32, resonance: f32) {
         if cutoff != self.cutoff || resonance != self.resonance {
             self.cutoff = cutoff;
             self.resonance = resonance;
-            let g = (PI * (cutoff/self.sample_rate)).tan();
-            self.k = 2.0 - 2.0*resonance.min(1.0).max(0.0);
+            let g = (PI * (cutoff / self.sample_rate)).tan();
+            self.k = 2.0 - 2.0 * resonance.min(1.0).max(0.0);
 
-            self.a1 = 1.0 / (1.0 + g*(g+self.k));
-            self.a2 = g*self.a1;
-            self.a3 = g*self.a2;
+            self.a1 = 1.0 / (1.0 + g * (g + self.k));
+            self.a2 = g * self.a1;
+            self.a3 = g * self.a2;
         }
     }
 
-    fn tick(&mut self, input: f32) -> (f32, f32) {
+    pub fn tick(&mut self, input: f32) -> (f32, f32) {
         let v3 = input - self.ic2eq;
-        let v1 = self.a1*self.ic1eq + self.a2*v3;
-        let v2 = self.ic2eq + self.a2*self.ic1eq + self.a3*v3;
+        let v1 = self.a1 * self.ic1eq + self.a2 * v3;
+        let v2 = self.ic2eq + self.a2 * self.ic1eq + self.a3 * v3;
 
-        self.ic1eq = 2.0*v1 - self.ic1eq;
-        self.ic2eq = 2.0*v2 - self.ic2eq;
+        self.ic1eq = 2.0 * v1 - self.ic1eq;
+        self.ic2eq = 2.0 * v2 - self.ic2eq;
         if !(self.ic1eq.is_finite() && self.ic2eq.is_finite()) {
             self.ic1eq = 0.0;
             self.ic2eq = 0.0;
@@ -76,20 +73,20 @@ impl Simper {
         (v1, v2)
     }
 
-    fn low(&mut self, input: f32) -> f32 {
+    pub fn low(&mut self, input: f32) -> f32 {
         self.tick(input).1
     }
 
-    fn band(&mut self, input: f32) -> f32 {
+    pub fn band(&mut self, input: f32) -> f32 {
         self.tick(input).0
     }
 
-    fn high(&mut self, input: f32) -> f32 {
+    pub fn high(&mut self, input: f32) -> f32 {
         let (v1, v2) = self.tick(input);
-        input  - self.k*v1 - v2
+        input - self.k * v1 - v2
     }
 
-    fn set_sample_rate(&mut self, rate: f32) {
+    pub fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate;
     }
 }
@@ -176,7 +173,7 @@ impl Biquad {
         }
     }
 
-    fn pub tick(&mut self, input: f64) -> f64 {
+    pub fn tick(&mut self, input: f64) -> f64 {
         self.x0 = self.gain * input;
         let mut output = self.b0 * self.x0 + self.b1 * self.x1 + self.b2 * self.x2;
         output -= self.a2 * self.y2 + self.a1 * self.y1;
@@ -222,5 +219,3 @@ impl OnePole {
         output
     }
 }
-
-

@@ -69,10 +69,7 @@ impl InstrumentSynth {
         }
     }
 
-    pub fn replace_synth(
-        &self,
-        mut synth: impl Node<Input = U0, Output = U2> + 'static,
-    ) {
+    pub fn replace_synth(&self, mut synth: impl Node<Input = U0, Output = U2> + 'static) {
         synth.set_sample_rate(self.sample_rate);
         let synth = Box::new(synth);
         *self.synth.borrow_mut() = synth;

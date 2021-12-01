@@ -1,9 +1,6 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
+use std::f32::consts::PI;
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
-
 
 #[derive(Clone)]
 pub struct Folder;
@@ -14,12 +11,10 @@ impl Node for Folder {
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut r = input[0];
-        for i in 0..BLOCK_SIZE {
-            let mut v = r[i];
-            while v.abs() > 1.0 {
-                v = v.signum() - (v - v.signum());
+        for r in r.iter_mut() {
+            while r.abs() > 1.0 {
+                *r = r.signum() - (*r - r.signum());
             }
-            r[i] = v;
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
@@ -57,10 +52,10 @@ impl Node for Compressor {
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (attack, decay, threshold, ratio, signal) = (input[0], input[1], input[2], input[3], input[4]);
+        let (attack, decay, threshold, ratio, signal) =
+            (input[0], input[1], input[2], input[3], input[4]);
         let mut r = [0.0; BLOCK_SIZE];
-        let mut eoc = [0.0f32; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let attack = attack[i];
             let decay = decay[i];
             let threshold = threshold[i];
@@ -71,11 +66,9 @@ impl Node for Compressor {
                     self.triggered = true;
                     self.time = 0.0;
                 }
-            } else {
-                if self.triggered {
-                    self.triggered = false;
-                    self.time = 0.0;
-                }
+            } else if self.triggered {
+                self.triggered = false;
+                self.time = 0.0;
             }
             self.time += self.per_sample;
             let v = if self.triggered {
@@ -84,9 +77,9 @@ impl Node for Compressor {
                 let t = self.time.min(decay) / decay;
                 1.0 - t
             };
-            self.current = self.current * 0.001 + (1.0-ratio*v) * 0.999;
+            self.current = self.current * 0.001 + (1.0 - ratio * v) * 0.999;
             assert!(self.current.is_finite());
-            r[i] = self.current;
+            *r = self.current;
         }
 
         arr![[f32; BLOCK_SIZE]; r]

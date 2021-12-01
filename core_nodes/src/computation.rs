@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 #[derive(Clone, Default)]
@@ -21,7 +18,6 @@ impl Node for Constant {
     }
 }
 
-
 #[derive(Clone, Default)]
 pub struct Accumulator {
     value: f32,
@@ -39,7 +35,7 @@ impl Node for Accumulator {
         let reset_trigger = input[3];
 
         let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             if sum_trigger[i] > 0.5 {
                 if !self.sum_triggered {
                     self.sum_triggered = true;
@@ -56,7 +52,7 @@ impl Node for Accumulator {
             } else {
                 self.reset_triggered = false;
             }
-            r[i] = self.value;
+            *r = self.value;
         }
 
         arr![[f32; BLOCK_SIZE]; r]
@@ -75,7 +71,7 @@ impl Node for Toggle {
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut r = [0.0f32; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             if input[0][i] > 0.5 {
                 if !self.triggered {
                     self.triggered = true;
@@ -84,7 +80,7 @@ impl Node for Toggle {
             } else {
                 self.triggered = false;
             }
-            r[i] = if self.value { 1.0 } else { 0.0 };
+            *r = if self.value { 1.0 } else { 0.0 };
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
@@ -101,11 +97,11 @@ impl Node for Comparator {
         let (a, b) = (input[0], input[1]);
 
         let mut r = [0.0f32; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             if a[i] > b[i] {
-                r[i] = 1.0
+                *r = 1.0
             } else {
-                r[i] = 0.0
+                *r = 0.0
             }
         }
         arr![[f32; BLOCK_SIZE]; r]
@@ -133,7 +129,6 @@ impl Node for CXor {
     }
 }
 
-
 #[derive(Copy, Clone, Default)]
 pub struct SampleAndHold(f32, bool, bool);
 impl Node for SampleAndHold {
@@ -144,7 +139,7 @@ impl Node for SampleAndHold {
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let (gate, signal) = (input[0], input[1]);
         let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let gate = gate[i];
             let signal = signal[i];
             if !self.1 && gate > 0.5 || !self.2 {
@@ -154,7 +149,7 @@ impl Node for SampleAndHold {
             } else if gate < 0.5 {
                 self.1 = false;
             }
-            r[i] = self.0;
+            *r = self.0;
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
@@ -175,7 +170,6 @@ impl Node for ModulatedRescale {
         arr![[f32; BLOCK_SIZE]; v]
     }
 }
-
 
 #[derive(Clone, Default)]
 pub struct QuadSwitch {
@@ -244,7 +238,7 @@ impl Node for Portamento {
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let (transition_time, sig) = (input[0], input[1]);
         let mut r = sig;
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let sig = sig[i];
             if sig != self.target {
                 let transition_time = transition_time[i];
@@ -255,7 +249,7 @@ impl Node for Portamento {
             if self.remaining > 0 {
                 self.current += self.delta;
                 self.remaining -= 1;
-                r[i] = self.current;
+                *r = self.current;
             }
         }
         arr![[f32; BLOCK_SIZE]; r]

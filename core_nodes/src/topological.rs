@@ -1,8 +1,4 @@
-use std::{
-    marker::PhantomData,
-    sync::Arc,
-    cell::RefCell,
-};
+use std::{cell::RefCell, marker::PhantomData, sync::Arc};
 
 use generic_array::{
     arr,
@@ -57,7 +53,7 @@ where
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let a = self.0.process(input.clone());
-       let b = self.1.process(input);
+        let b = self.1.process(input);
         a.concat(b)
     }
 
@@ -188,7 +184,6 @@ impl Node for StereoIdentity {
         input
     }
 }
-
 
 #[derive(Clone)]
 pub struct IndexPort<A: ArrayLength<[f32; BLOCK_SIZE]>>(usize, PhantomData<A>);

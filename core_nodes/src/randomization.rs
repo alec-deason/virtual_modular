@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use rand::prelude::*;
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
@@ -40,24 +37,13 @@ impl Node for BernoulliGate {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct EuclidianPulse {
     pulses: u32,
     len: u32,
     steps: Vec<bool>,
     idx: usize,
     triggered: bool,
-}
-impl Default for EuclidianPulse {
-    fn default() -> Self {
-        Self {
-            pulses: 0,
-            len: 0,
-            steps: vec![],
-            idx: 0,
-            triggered: false,
-        }
-    }
 }
 
 impl Node for EuclidianPulse {
@@ -71,7 +57,7 @@ impl Node for EuclidianPulse {
         let gate = input[2];
         let mut r = [0.0f32; BLOCK_SIZE];
 
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let pulses = pulses[i] as u32;
             let len = len[i] as u32;
             if pulses != self.pulses || len != self.len {
@@ -85,7 +71,7 @@ impl Node for EuclidianPulse {
                     self.triggered = true;
                     self.idx = (self.idx + 1) % self.len as usize;
                     if self.steps[self.idx] {
-                        r[i] = 1.0;
+                        *r = 1.0;
                     }
                 }
             } else {
@@ -100,7 +86,7 @@ fn make_euclidian_rhythm(pulses: u32, len: u32, steps: &mut Vec<bool>) {
     steps.resize(len as usize, false);
     steps.fill(false);
     let mut bucket = 0;
-    for (i, step) in steps.iter_mut().enumerate() {
+    for step in steps.iter_mut() {
         bucket += pulses;
         if bucket >= len {
             bucket -= len;
@@ -132,29 +118,24 @@ impl Node for Brownian {
         let (rate, min, max, trig) = (input[0], input[1], input[2], input[3]);
 
         let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let rate = rate[i];
             let min = min[i];
             let max = max[i];
             let trig = trig[i];
-            if !self.current.is_finite() {
-                self.current = thread_rng().gen_range(min..max);
-            }
             if trig > 0.5 {
                 if !self.triggered {
                     self.current += thread_rng().gen_range(-1.0..1.0) * rate;
+                    if !self.current.is_finite() {
+                        self.current = thread_rng().gen_range(min..max);
+                    }
+                    self.current = self.current.min(max).max(min);
                     self.triggered = true;
                 }
             } else {
                 self.triggered = false;
             }
-            if self.current > max {
-                self.current -= self.current - max;
-            }
-            if self.current < min {
-                self.current += min - self.current;
-            }
-            r[i] = self.current;
+            *r = self.current;
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
@@ -170,7 +151,7 @@ pub struct Markov {
 impl Markov {
     pub fn new(transitions: &[(f32, Vec<(usize, f32)>)]) -> Self {
         Self {
-            transitions: transitions.iter().cloned().collect(),
+            transitions: transitions.to_vec(),
             current_state: 0,
             trigger: false,
         }
@@ -211,7 +192,7 @@ impl Node for Markov {
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             if input[0][i] > 0.5 {
                 if !self.trigger {
                     self.trigger = true;
@@ -226,7 +207,7 @@ impl Node for Markov {
             } else {
                 self.trigger = false;
             }
-            r[i] = self.transitions[self.current_state].0;
+            *r = self.transitions[self.current_state].0;
         }
         arr![[f32; BLOCK_SIZE]; r]
     }

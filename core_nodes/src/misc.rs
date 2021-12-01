@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 #[derive(Copy, Clone)]
@@ -16,7 +13,6 @@ impl Node for Log {
         input
     }
 }
-
 
 #[derive(Copy, Clone, Debug)]
 pub enum Interpolation {
@@ -89,7 +85,7 @@ impl Node for Automation {
     type Output = U1;
 
     #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
         let step = &self.steps[self.step];
         let (v, running) = step.evaluate(self.time as f32);
         if !running {

@@ -1,10 +1,5 @@
+use generic_array::{arr, typenum::*};
 use std::collections::HashMap;
-use generic_array::{
-    arr,
-    sequence::{Concat, Split},
-    typenum::*,
-    ArrayLength,
-};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 #[derive(Clone, Debug)]
@@ -21,19 +16,32 @@ pub struct ABCSequence {
 impl ABCSequence {
     pub fn new(tune: &str) -> Option<Self> {
         let parsed = abc_parser::abc::tune(tune).ok()?;
-        let key = parsed.header.info.iter().find(|f| f.0 == 'K').map(|f| f.1.clone()).unwrap_or("C".to_string());
-        let key:HashMap<_, _> = match key.as_str() {
+        let key = parsed
+            .header
+            .info
+            .iter()
+            .find(|f| f.0 == 'K')
+            .map(|f| f.1.clone())
+            .unwrap_or("C".to_string());
+        let key: HashMap<_, _> = match key.as_str() {
             "C" => vec![],
             "G" => vec![('F', abc_parser::datatypes::Accidental::Sharp)],
-            _ => panic!()
-        }.into_iter().collect();
-        let mut line:Vec<_> = parsed.body.unwrap().music.into_iter().map(|l| l.symbols.clone()).flatten().collect();
-        line.retain(|s| {
-            match s {
-                abc_parser::datatypes::MusicSymbol::Rest(abc_parser::datatypes::Rest::Note(length)) => true,
-                abc_parser::datatypes::MusicSymbol::Note { length, .. } => true,
-                _ => false,
-            }
+            _ => panic!(),
+        }
+        .into_iter()
+        .collect();
+        let mut line: Vec<_> = parsed
+            .body
+            .unwrap()
+            .music
+            .into_iter()
+            .map(|l| l.symbols.clone())
+            .flatten()
+            .collect();
+        line.retain(|s| match s {
+            abc_parser::datatypes::MusicSymbol::Rest(abc_parser::datatypes::Rest::Note(..)) => true,
+            abc_parser::datatypes::MusicSymbol::Note { .. } => true,
+            _ => false,
         });
         let mut r = Self {
             line,
@@ -68,7 +76,6 @@ impl ABCSequence {
         if let abc_parser::datatypes::MusicSymbol::Note {
             note,
             octave,
-            length,
             accidental,
             ..
         } = self.line[idx]
@@ -105,7 +112,9 @@ impl ABCSequence {
 
     fn duration(&self, idx: usize) -> u32 {
         match self.line[idx] {
-            abc_parser::datatypes::MusicSymbol::Rest(abc_parser::datatypes::Rest::Note(length)) => {
+            abc_parser::datatypes::MusicSymbol::Rest(abc_parser::datatypes::Rest::Note(
+                _length,
+            )) => {
                 unimplemented!()
             }
             abc_parser::datatypes::MusicSymbol::Note { length, .. } => (length * 24.0) as u32,
@@ -126,7 +135,7 @@ impl Node for ABCSequence {
         let mut r_eoc = [0.0f32; BLOCK_SIZE];
         let mut r_dur = [0.0f32; BLOCK_SIZE];
         for i in 0..BLOCK_SIZE {
-            if trigger[i] > 0.5  {
+            if trigger[i] > 0.5 {
                 if !self.triggered {
                     self.triggered = true;
                     self.clock -= 1;

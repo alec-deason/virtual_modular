@@ -1,12 +1,9 @@
-use std::{
-    hash::{Hash, Hasher},
-    collections::hash_map::DefaultHasher
-};
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use rand::prelude::*;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 #[derive(Clone, Debug)]
@@ -54,15 +51,14 @@ impl Subsequence {
 
     fn reset(&mut self) {
         match self {
-            Subsequence::Rest(clock) |
-            Subsequence::Item(_, clock) => *clock = 0.0,
-            Subsequence::Tuplet(sub_sequence, sub_idx) |
-            Subsequence::Iter(sub_sequence, sub_idx) |
-            Subsequence::Choice(sub_sequence, sub_idx) => {
+            Subsequence::Rest(clock) | Subsequence::Item(_, clock) => *clock = 0.0,
+            Subsequence::Tuplet(sub_sequence, sub_idx)
+            | Subsequence::Iter(sub_sequence, sub_idx)
+            | Subsequence::Choice(sub_sequence, sub_idx) => {
                 sub_sequence.iter_mut().for_each(|s| s.reset());
                 *sub_idx = 0;
             }
-            Subsequence::ClockMultiplier(sub_sequence, mul) => sub_sequence.reset(),
+            Subsequence::ClockMultiplier(sub_sequence, ..) => sub_sequence.reset(),
         }
     }
 
@@ -149,6 +145,7 @@ impl Subsequence {
         }
     }
 
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {
             Subsequence::Item(..)
@@ -156,7 +153,7 @@ impl Subsequence {
             | Subsequence::Choice(..)
             | Subsequence::Rest(..) => 1,
             Subsequence::Tuplet(sub_sequence, ..) => sub_sequence.len(),
-            Subsequence::ClockMultiplier(sub_sequence, mul) => sub_sequence.len(),
+            Subsequence::ClockMultiplier(sub_sequence, ..) => sub_sequence.len(),
         }
     }
 }
@@ -185,8 +182,8 @@ impl PatternSequencer {
         let mut r_trig = 0.0;
         let mut r_gate = 0.0;
         let mut r_eoc = 0.0;
-        let mut r_value = 0.0;
-        let mut r_len = 0.0;
+        let r_value;
+        let r_len;
 
         let mut pulse = false;
         if trigger > 0.5 {
@@ -395,7 +392,7 @@ fn parse_sequence(data: &str) -> Result<Subsequence, String> {
     }
 
     fn number<'a>() -> Parser<'a, u8, f32> {
-        let integer = one_of(b"123456789") - one_of(b"0123456789").repeat(0..) | sym(b'0');
+        let integer = one_of(b"0123456789").repeat(0..);
         let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
         let exp = one_of(b"eE") + one_of(b"+-").opt() + one_of(b"0123456789").repeat(1..);
         let number = sym(b'-').opt() + integer + frac.opt() + exp.opt();

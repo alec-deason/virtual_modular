@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 macro_rules! binary_op {
@@ -21,8 +18,8 @@ macro_rules! binary_op {
     }
 }
 
-binary_op!(Mul, |a, b| (a*b));
-binary_op!(Div, |a, b| (a/b));
-binary_op!(Add, |a, b| (a+b));
-binary_op!(Sub, |a, b| (a-b));
-binary_op!(Pow, |a:f32, b| (a.powf(b)));
+binary_op!(Mul, |a, b| (a * b));
+binary_op!(Div, |a, b| (a / b));
+binary_op!(Add, |a, b| (a + b));
+binary_op!(Sub, |a, b| (a - b));
+binary_op!(Pow, |a: f32, b| (a.powf(b)));

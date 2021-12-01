@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use rand::prelude::*;
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
@@ -10,7 +7,7 @@ pub struct TapsAndStrikes {
     current_freq: f32,
     old_freq: f32,
     current_freq_modified: f32,
-    crossover:f32,
+    crossover: f32,
     can_roll: bool,
     triggered: bool,
     per_sample: f32,
@@ -48,7 +45,7 @@ impl Node for TapsAndStrikes {
                 self.triggered = false;
             }
             r_freq[i] = self.current_freq_modified;
-            self.crossover = self.crossover - self.per_sample/attack[i];
+            self.crossover -= self.per_sample / attack[i];
             if self.crossover <= 0.0 {
                 self.current_freq_modified = self.current_freq;
             }

@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 const C0: f32 = 16.35;
@@ -24,7 +21,7 @@ impl Node for Quantizer {
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut r = [0.0f32; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let input = input[0][i].max(0.0);
             let freq = C0 * 2.0f32.powf(input);
 
@@ -39,7 +36,7 @@ impl Node for Quantizer {
                     min_freq = v;
                 }
             }
-            r[i] = min_freq;
+            *r = min_freq;
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
@@ -72,13 +69,13 @@ impl Node for DegreeQuantizer {
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let input = input[0][i];
             let degree = (input + self.values.len() as f32 * 4.0).max(0.0).round() as usize;
 
             let octave = degree / self.values.len();
             let idx = degree % self.values.len();
-            r[i] = self.values[idx] * 2.0f32.powi(octave as i32);
+            *r = self.values[idx] * 2.0f32.powi(octave as i32);
         }
 
         arr![[f32; BLOCK_SIZE]; r]
@@ -104,13 +101,13 @@ impl Node for TritaveDegreeQuantizer {
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let input = input[0][i];
             let degree = (input + self.values.len() as f32 * 2.0).max(0.0).round() as usize;
 
             let octave = degree / self.values.len();
             let idx = degree % self.values.len();
-            r[i] = self.values[idx] * 3.0f32.powi(octave as i32);
+            *r = self.values[idx] * 3.0f32.powi(octave as i32);
         }
         arr![[f32; BLOCK_SIZE]; r]
     }

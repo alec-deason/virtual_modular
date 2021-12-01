@@ -1,23 +1,18 @@
 #![feature(exact_size_is_empty)]
-use generic_array::typenum::*;
-use gilrs::{Event, EventType, Gilrs};
-use portmidi as pm;
-use ringbuf::{Consumer, Producer, RingBuffer};
+use ringbuf::{Consumer, RingBuffer};
 use std::{convert::TryFrom, sync::Arc};
 
-use virtual_modular_dynamic_environment::{BoxedDynamicNode, DynamicGraph, DynamicGraphBuilder};
-use virtual_modular::{
-    InstrumentSynth,
-};
+use virtual_modular::InstrumentSynth;
+use virtual_modular_dynamic_environment::DynamicGraphBuilder;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 fn main() {
     let synth_path = std::env::args().nth(1);
 
-    let mut builder = InstrumentSynth::builder();
+    let builder = InstrumentSynth::builder();
 
-    let mut graph = if let Some(synth_data) = synth_path
+    let graph = if let Some(synth_data) = synth_path
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p).ok())
     {
@@ -28,12 +23,6 @@ fn main() {
 
     let inputs = Arc::clone(&graph.external_inputs);
     std::thread::spawn(move || {
-        let mut gilrs = Gilrs::new().unwrap();
-
-        let context = pm::PortMidi::new().unwrap();
-        use std::time::Duration;
-        let timeout = Duration::from_millis(10);
-
         let mut voices = std::collections::HashMap::new();
         for c in 0..10 {
             voices.insert(c, (0..4).map(|i| (i, None)).collect::<Vec<_>>());
@@ -70,11 +59,9 @@ fn main() {
                                         .or_insert_with(Vec::new)
                                         .push(u8::try_from(v).unwrap() as f32 / 127.0);
                                 } else {
-                                    let mut smash = false;
                                     let (aval, voice) = if let Some((aval, voice)) = aval {
                                         (aval, voice)
                                     } else {
-                                        smash = true;
                                         (0, voices[0].0)
                                     };
                                     inputs
@@ -94,7 +81,7 @@ fn main() {
                                         voices.insert(0, (voice, Some(n)));
                                         voices.rotate_left(1);
                                     } else {
-                                        for (i, (j, f)) in voices.iter_mut().enumerate() {
+                                        for (j, f) in voices.iter_mut() {
                                             if Some(n) == *f {
                                                 *f = None;
                                                 inputs
@@ -134,9 +121,9 @@ fn main() {
                                 .or_insert_with(Vec::new)
                                 .push(u8::try_from(v).unwrap() as f32 / 127.0);
                         }
-                        wmidi::MidiMessage::NoteOff(c, n, v) => {
+                        wmidi::MidiMessage::NoteOff(c, n, ..) => {
                             if let Some(voices) = voices.get_mut(&c.index()) {
-                                for (i, (j, f)) in voices.iter_mut().enumerate() {
+                                for (j, f) in voices.iter_mut() {
                                     if Some(n) == *f {
                                         *f = None;
                                         inputs
@@ -207,7 +194,7 @@ fn main() {
             }
             jack::Control::Continue
         };
-        let active_client = client
+        let _active_client = client
             .activate_async((), jack::ClosureProcessHandler::new(cback))
             .unwrap();
         loop {
@@ -229,7 +216,7 @@ fn main() {
     synth.set_sample_rate(sample_rate);
 
     let rb = RingBuffer::<(f32, f32)>::new(4048);
-    let (mut prod, mut cons) = rb.split();
+    let (mut prod, cons) = rb.split();
 
     std::thread::spawn(move || {
         let mut left = vec![0.0; 32];
@@ -248,7 +235,7 @@ fn main() {
         }
     });
 
-    let cpal_stream = match config.sample_format() {
+    let _cpal_stream = match config.sample_format() {
         cpal::SampleFormat::F32 => run::<f32>(&device, &config.into(), cons),
         cpal::SampleFormat::I16 => run::<i16>(&device, &config.into(), cons),
         cpal::SampleFormat::U16 => run::<u16>(&device, &config.into(), cons),
@@ -312,7 +299,7 @@ where
     T: cpal::Sample,
 {
     let mut underran = false;
-    for (i, frame) in output.chunks_mut(channels).enumerate() {
+    for frame in output.chunks_mut(channels) {
         let (value_left, value_right) = ring_buffer.pop().unwrap_or_else(|| {
             underran = true;
             (0.0, 0.0)

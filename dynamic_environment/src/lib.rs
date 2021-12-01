@@ -5,14 +5,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
-use virtual_modular_core_nodes::*;
-use virtual_modular_definition_language::{Line, parse};
 use generic_array::{
     arr,
     typenum::{ToInt, U0, U1, U2},
     ArrayLength,
 };
+use virtual_modular_core_nodes::*;
+use virtual_modular_definition_language::{parse, Line};
+use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 #[macro_export]
 macro_rules! dynamic_nodes {
@@ -34,7 +34,6 @@ dynamic_nodes! {
         Add: Add,
         Compressor: Compressor::default(),
         SoftClip:SoftClip,
-        WeirdOsc: WeirdOsc::default(),
         Sub: Sub,
         Mul: Mul,
         Div: Div,
@@ -42,20 +41,19 @@ dynamic_nodes! {
         CXor: CXor,
         Comp: Comparator,
         Sine: Sine::default(),
-        Psine: WaveTable::positive_sine(),
+        Psine: PositiveSine::default(),
         Saw: WaveTable::saw(),
         PulseOnLoad: PulseOnLoad::default(),
         Noise: Noise::default(),
         PNoise: Noise::positive(),
-        Ad: InlineADEnvelope::default(),
-        Adsr: InlineADSREnvelope::default(),
+        Ad: ADEnvelope::default(),
+        Adsr: ADSREnvelope::default(),
         QImp: QuantizedImpulse::default(),
         AllPass: AllPass::default(),
         Sh: SampleAndHold::default(),
         Pd: PulseDivider::default(),
         Log: Log,
         Acc: Accumulator::default(),
-        Reverb2: Reverb2::default(),
         Pan: Pan,
         MonoPan: MonoPan,
         MidSideDecoder: MidSideDecoder,
@@ -67,8 +65,8 @@ dynamic_nodes! {
         Bp: SimperBandPass::default(),
         Toggle: Toggle::default(),
         Portamento: Portamento::default(),
-        Reverb: Reverb::new(),
-        Delay: ModableDelay::new(),
+        Reverb: Reverb::default(),
+        Delay: ModableDelay::default(),
         Bg: BernoulliGate::default(),
         C: Identity,
         QuadSwitch: QuadSwitch::default(),
@@ -91,8 +89,6 @@ dynamic_nodes! {
         SympatheticString: SympatheticString::default(),
         WaveMesh: WaveMesh::default(),
         PennyWhistle: PennyWhistle::default(),
-        WeirdoDistortion: WeirdoDistortion,
-        Phaser: Phaser::default(),
         StereoIdentity: StereoIdentity,
         StringBodyFilter: StringBodyFilter::default()
     }
@@ -131,7 +127,9 @@ pub trait DynamicNode: DynClone {
     fn get(&self, i: usize) -> [f32; BLOCK_SIZE];
     fn set(&mut self, i: usize, v: [f32; BLOCK_SIZE]);
     fn add(&mut self, i: usize, v: [f32; BLOCK_SIZE]);
-    fn set_static_parameters(&mut self, _parameters: &str) -> Result<(), String> { Ok(()) }
+    fn set_static_parameters(&mut self, _parameters: &str) -> Result<(), String> {
+        Ok(())
+    }
     fn set_sample_rate(&mut self, rate: f32);
 }
 dyn_clone::clone_trait_object!(DynamicNode);
@@ -181,7 +179,6 @@ impl<
         self.0.set_sample_rate(rate);
     }
 }
-
 
 impl DynamicNode for (DynamicGraph, RefCell<[[f32; BLOCK_SIZE]; 2]>) {
     fn process(&mut self) {
@@ -331,12 +328,10 @@ impl DynamicGraph {
                         } else {
                             self.output.1.iter_mut().zip(&v).for_each(|(r, v)| *r += *v);
                         }
+                    } else if let Some(n) = self.nodes.get_mut(node) {
+                        n.0.add(*dst_i, v);
                     } else {
-                        if let Some(n) = self.nodes.get_mut(node) {
-                            n.0.add(*dst_i, v);
-                        } else {
-                            return Err(format!("Unknown node {}", node))
-                        }
+                        return Err(format!("Unknown node {}", node));
                     }
                 }
             }
@@ -344,7 +339,7 @@ impl DynamicGraph {
                 if let Some(n) = self.nodes.get_mut(node) {
                     n.0.process();
                 } else if !self.external_input_nodes.contains_key(node) {
-                    return Err(format!("Unknown node {}", node))
+                    return Err(format!("Unknown node {}", node));
                 }
             }
         }
@@ -371,7 +366,7 @@ impl DynamicGraph {
     }
 
     pub fn add_edge(&mut self, src_i: usize, src: String, dst_i: usize, dst: String) {
-        let es = self.edges.entry(dst).or_insert_with(|| vec![]);
+        let es = self.edges.entry(dst).or_insert_with(Vec::new);
         es.push((dst_i, src, src_i));
     }
 
@@ -382,10 +377,7 @@ impl DynamicGraph {
                 if src == "input" {
                     continue;
                 }
-                edges
-                    .entry(src)
-                    .or_insert_with(|| HashSet::new())
-                    .insert(dst);
+                edges.entry(src).or_insert_with(HashSet::new).insert(dst);
             }
         }
         let mut nodes: HashSet<String> = self.nodes.keys().cloned().collect();
@@ -431,12 +423,12 @@ impl DynamicGraph {
     fn reparse(&mut self, l: &[Line]) -> Result<(), String> {
         self.edges.clear();
         let mut nodes = HashMap::new();
-        let mut watch_list = HashSet::new();
+        let watch_list = HashSet::new();
         let mut input_len = 0;
 
         for l in l {
             match l {
-                Line::Node { name, ty, ..} => {
+                Line::Node { name, ty, .. } => {
                     nodes.insert(name, ty.clone());
                 }
                 Line::BridgeNode(in_node, out_node) => {
@@ -446,17 +438,17 @@ impl DynamicGraph {
                 _ => (),
             }
         }
-        self.nodes.retain(|k, v| {
-            nodes
-                .get(k)
-                .map(|ty| &v.1 == ty)
-                .unwrap_or(false)
-        });
+        self.nodes
+            .retain(|k, v| nodes.get(k).map(|ty| &v.1 == ty).unwrap_or(false));
         self.external_input_nodes.clear();
         self.reset_edges.clear();
         for l in l {
             match l {
-                Line::Node { name, ty, static_parameters } => {
+                Line::Node {
+                    name,
+                    ty,
+                    static_parameters,
+                } => {
                     if !self.nodes.contains_key(name) {
                         match ty.as_str() {
                             "Constant" => {
@@ -481,11 +473,9 @@ impl DynamicGraph {
                                 }
                             }
                         }
-                    } else {
-                        if let Some(p) = static_parameters {
-                            if let Some(n) = self.nodes.get_mut(name) {
-                                n.0.set_static_parameters(p)?;
-                            }
+                    } else if let Some(p) = static_parameters {
+                        if let Some(n) = self.nodes.get_mut(name) {
+                            n.0.set_static_parameters(p)?;
                         }
                     }
                 }
@@ -512,13 +502,18 @@ impl DynamicGraph {
         }
         self.input.resize(input_len as usize, [0.0; BLOCK_SIZE]);
         *self.watch_list.lock().unwrap() = watch_list;
-        let r = self.update_sort();
-        r
+        self.update_sort()
     }
 
     fn get(&self, n: &str, i: usize) -> Result<[f32; BLOCK_SIZE], String> {
         if n == "input" {
-            self.input.get(i).cloned().ok_or_else(|| format!("Input index {} greater than input len {}", i, self.input.len()))
+            self.input.get(i).cloned().ok_or_else(|| {
+                format!(
+                    "Input index {} greater than input len {}",
+                    i,
+                    self.input.len()
+                )
+            })
         } else if let Some((_, v)) = self.external_input_nodes.get(n) {
             Ok([*v; BLOCK_SIZE])
         } else if let Some(n) = self.nodes.get(n) {

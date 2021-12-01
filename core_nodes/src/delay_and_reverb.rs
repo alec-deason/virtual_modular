@@ -1,10 +1,7 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use crate::filter::AllPass;
+use generic_array::{arr, typenum::*};
 use rand::prelude::*;
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
-use crate::filter::AllPass;
 
 #[derive(Clone)]
 pub struct Reverb {
@@ -18,8 +15,8 @@ pub struct Reverb {
     idx_r: usize,
     per_sample: f32,
 }
-impl Reverb {
-    pub fn new() -> Self {
+impl Default for Reverb {
+    fn default() -> Self {
         let mut rng = StdRng::seed_from_u64(2);
         let taps: Vec<_> = (0..10)
             .map(|_| (rng.gen_range(0.001..1.0), rng.gen::<f32>()))
@@ -91,18 +88,10 @@ impl Node for Reverb {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ModableDelay {
     line: DelayLine,
     rate: f32,
-}
-impl ModableDelay {
-    pub fn new() -> Self {
-        Self {
-            line: DelayLine::default(),
-            rate: 0.0,
-        }
-    }
 }
 impl Node for ModableDelay {
     type Input = U2;
@@ -112,12 +101,12 @@ impl Node for ModableDelay {
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let (len, sig) = (input[0], input[1]);
         let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
+        for (i, r) in r.iter_mut().enumerate() {
             let len = len[i].max(0.000001);
             self.line.set_delay((len * self.rate) as f64);
             let sig = sig[i];
             self.line.tick(sig as f64);
-            r[i] = self.line.next() as f32;
+            *r = self.line.current() as f32;
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
@@ -134,7 +123,6 @@ pub struct DelayLine {
     out_index: f64,
     delay: f64,
 }
-
 
 impl Default for DelayLine {
     fn default() -> Self {
@@ -187,7 +175,7 @@ impl DelayLine {
         }
     }
 
-    pub fn next(&self) -> f64 {
+    pub fn current(&self) -> f64 {
         let alpha = self.out_index.fract();
         let mut out = self.line[self.out_index as usize] * (1.0 - alpha);
         out += if self.out_index + 1.0 >= self.line.len() as f64 {
@@ -208,15 +196,15 @@ mod delay_tests {
         let mut l = DelayLine::default();
         l.set_delay(10.0);
         l.tick(1.0);
-        assert_eq!(l.next(), 0.0);
+        assert_eq!(l.current(), 0.0);
         for _ in 0..9 {
-            assert_eq!(l.next(), 0.0);
+            assert_eq!(l.current(), 0.0);
             l.tick(0.0);
         }
-        assert_eq!(l.next(), 1.0);
+        assert_eq!(l.current(), 1.0);
         l.tick(0.0);
         for _ in 0..20 {
-            assert_eq!(l.next(), 0.0);
+            assert_eq!(l.current(), 0.0);
             l.tick(0.0);
         }
     }
@@ -225,28 +213,28 @@ mod delay_tests {
     fn small_interp() {
         let mut l = DelayLine::default();
         l.set_delay(10.1);
-        assert_eq!(l.next(), 0.0);
+        assert_eq!(l.current(), 0.0);
         l.tick(1.0);
         for _ in 0..9 {
-            assert_eq!(l.next(), 0.0);
+            assert_eq!(l.current(), 0.0);
             l.tick(0.0);
         }
-        assert!((1.0 - l.next()).abs() < 0.2);
+        assert!((1.0 - l.current()).abs() < 0.2);
         l.tick(0.0);
         for _ in 0..9 {
             println!("{:?}", l);
-            assert!((0.0 - l.next()).abs() < 0.2);
+            assert!((0.0 - l.current()).abs() < 0.2);
             l.tick(0.0);
         }
-        assert_eq!(l.next(), 0.0);
+        assert_eq!(l.current(), 0.0);
     }
 }
 
 #[derive(Clone, Default)]
 pub struct BlockDelayLine {
     lines: Vec<f64>,
-    width: usize,
-    len: f64,
+    pub width: usize,
+    pub len: f64,
     in_index: usize,
     out_index: f64,
     output_buffer: Vec<f64>,
@@ -305,7 +293,7 @@ impl BlockDelayLine {
         }
     }
 
-    pub fn next(&mut self) -> &[f64] {
+    pub fn current(&mut self) -> &[f64] {
         let alpha = self.out_index.fract();
         let i = self.out_index as usize * self.width;
         self.output_buffer
@@ -334,17 +322,17 @@ mod block_delay_tests {
         println!("{} {} {}", l.len, l.in_index, l.out_index);
         l.input_buffer().copy_from_slice(&[1.0; 10]);
         l.tick();
-        assert_eq!(l.next(), &[0.0; 10]);
+        assert_eq!(l.current(), &[0.0; 10]);
         for _ in 0..9 {
-            assert_eq!(l.next(), &[0.0; 10]);
+            assert_eq!(l.current(), &[0.0; 10]);
             l.input_buffer().copy_from_slice(&[0.0; 10]);
             l.tick();
         }
         println!("{:?} {} {} {}", l.lines, l.len, l.in_index, l.out_index);
-        assert_eq!(l.next(), &[1.0; 10]);
+        assert_eq!(l.current(), &[1.0; 10]);
         l.tick();
         for _ in 0..20 {
-            assert_eq!(l.next(), &[0.0; 10]);
+            assert_eq!(l.current(), &[0.0; 10]);
             l.input_buffer().copy_from_slice(&[0.0; 10]);
             l.tick();
         }
@@ -355,22 +343,22 @@ mod block_delay_tests {
         let mut l = BlockDelayLine::new(10, 10.1);
         l.input_buffer().copy_from_slice(&[1.0; 10]);
         println!("{} {} {}", l.len, l.in_index, l.out_index);
-        assert_eq!(l.next(), &[0.0; 10]);
+        assert_eq!(l.current(), &[0.0; 10]);
         l.tick();
         for _ in 0..9 {
-            assert_eq!(l.next(), &[0.0; 10]);
+            assert_eq!(l.current(), &[0.0; 10]);
             l.input_buffer().copy_from_slice(&[0.0; 10]);
             l.tick();
         }
         println!("{:?} {} {} {}", l.lines, l.len, l.in_index, l.out_index);
-        assert!(l.next().iter().all(|v| (1.0 - *v).abs() < 0.2));
+        assert!(l.current().iter().all(|v| (1.0 - *v).abs() < 0.2));
         l.input_buffer().copy_from_slice(&[0.0; 10]);
         l.tick();
         for _ in 0..9 {
-            assert!(l.next().iter().all(|v| (0.0 - *v).abs() < 0.2));
+            assert!(l.current().iter().all(|v| (0.0 - *v).abs() < 0.2));
             l.input_buffer().copy_from_slice(&[0.0; 10]);
             l.tick();
         }
-        assert_eq!(l.next(), &[0.0; 10]);
+        assert_eq!(l.current(), &[0.0; 10]);
     }
 }

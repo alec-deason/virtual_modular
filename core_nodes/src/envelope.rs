@@ -1,7 +1,4 @@
-use generic_array::{
-    arr,
-    typenum::*,
-};
+use generic_array::{arr, typenum::*};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 #[derive(Copy, Clone, Default)]
@@ -31,10 +28,8 @@ impl Node for ADEnvelope {
                     self.time = 0.0;
                     self.running_cycle = true;
                 }
-            } else {
-                if self.triggered {
-                    self.triggered = false
-                }
+            } else if self.triggered {
+                self.triggered = false
             }
             self.time += self.per_sample;
             let v = if self.time < attack {
@@ -91,11 +86,9 @@ impl Node for ADSREnvelope {
                     self.triggered = true;
                     self.time = 0.0;
                 }
-            } else {
-                if self.triggered {
-                    self.triggered = false;
-                    self.time = 0.0;
-                }
+            } else if self.triggered {
+                self.triggered = false;
+                self.time = 0.0;
             }
             self.time += self.per_sample;
             if self.triggered {
@@ -109,10 +102,8 @@ impl Node for ADSREnvelope {
                 };
                 self.current = self.current * 0.001 + target * 0.999;
                 r[i] = self.current;
-            } else {
-                if self.time < release {
-                    r[i] = (1.0 - self.time / release) * sustain;
-                }
+            } else if self.time < release {
+                r[i] = (1.0 - self.time / release) * sustain;
             }
         }
 
