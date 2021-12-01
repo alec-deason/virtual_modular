@@ -1,0 +1,21 @@
+[package]
+name = "virtual_modular_dynamic_environment"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+virtual_modular = { path = "../" }
+virtual_modular_graph = { path = "../graph" }
+virtual_modular_core_nodes = { path = "../core_nodes", features = ["abc"] }
+virtual_modular_definition_language = { path = "../definition_language" }
+generic-array = "0.14.4"
+pom = "3.2.0"
+uuid = { version = "0.8.2", features = ["v4"] }
+dyn-clone = "1.0.4"
+gilrs = "0.8.1"
+portmidi = "0.2.5"
+ringbuf = "0.2.5"
+cpal = "0.13.3"
+wmidi = "4.0.6"
+jack = "0.7.1"

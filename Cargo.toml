@@ -10,15 +10,13 @@ instrument = []
 [dependencies]
 rand = "0.8.3"
 concat-idents = "1.1.2"
-pom = "3.2.0"
-uuid = { version="0.8.2", features=["v4"] }
 gilrs = "0.8.1"
 glam = "0.16.0"
 ringbuf = "0.2.5"
 typenum = "1.13.0"
 generic-array = "0.14.4"
 virtual_modular_graph = { path = "./graph" }
-virtual_modular_core_nodes = { path = "./core_nodes", features=["abc"] }
+virtual_modular_core_nodes = { path = "./core_nodes" }
 dyn-clone = "1.0.4"
 indexmap = "1.6.2"
 
@@ -27,6 +25,3 @@ portmidi = "0.2.5"
 wmidi = "4.0.6"
 jack = "0.7.1"
 cpal = {version="0.13", features=["jack"]}
-
-[profile.release]
- debug = true

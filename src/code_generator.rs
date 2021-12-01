@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
 use crate::dynamic_graph::{
-    BoxedDynamicNode, DynamicGraphBuilder, DynamicNode, Line, NodeParameters,
+    DynamicGraphBuilder, DynamicNode, Line, NodeParameters,
 };
 
 #[derive(Clone, Debug)]

@@ -5,8 +5,8 @@ use portmidi as pm;
 use ringbuf::{Consumer, Producer, RingBuffer};
 use std::{convert::TryFrom, sync::Arc};
 
-use ::virtual_modular::{
-    dynamic_graph::{BoxedDynamicNode, DynamicGraph, DynamicGraphBuilder},
+use virtual_modular_dynamic_environment::{BoxedDynamicNode, DynamicGraph, DynamicGraphBuilder};
+use virtual_modular::{
     InstrumentSynth,
 };
 
@@ -40,17 +40,6 @@ fn main() {
         }
         let mut current_voice = 0;
 
-        //let info = context.device(1).unwrap();
-        /*
-        let in_ports = context
-             .devices()
-             .unwrap()
-             .into_iter()
-             .filter_map(|dev| context.input_port(dev, 1024).ok())
-             .collect::<Vec<_>>();
-         */
-        //println!("{:?}", context.devices());
-        //let mut in_ports = vec![context.default_input_port(1024).unwrap()];
         let (client, _status) =
             jack::Client::new("rust_jack_show_midi", jack::ClientOptions::NO_START_SERVER).unwrap();
         let shower = client
@@ -59,26 +48,7 @@ fn main() {
         let cback = move |_: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
             {
                 let mut inputs = inputs.lock().unwrap();
-                //while let Some(Event { id, event, time }) = gilrs.next_event() {
-                //    match event {
-                //        EventType::AxisChanged(a, v, ..) => {
-                //            inputs.entry(format!("pad_{:?}", a)).or_insert_with(Vec::new).push(v);
-                //        }
-                //        EventType::ButtonPressed(b, ..) => {
-                //            inputs.entry(format!("pad_{:?}", b)).or_insert_with(Vec::new).push(1.0);
-                //        }
-                //        EventType::ButtonReleased(b, ..) => {
-                //            inputs.entry(format!("pad_{:?}", b)).or_insert_with(Vec::new).push(0.0);
-                //        }
-                //        _ => ()
-                //    }
-                //}
-                //for port in &mut in_ports {
-                ///if let Ok(_) = port.poll() {
-                //port.poll();
-                // while let Ok(Some(event)) = port.read() {
                 for e in shower.iter(ps) {
-                    //let data = [event.message.status, event.message.data1, event.message.data2, event.message.data3];
                     let message = wmidi::MidiMessage::try_from(e.bytes).unwrap();
                     match message {
                         wmidi::MidiMessage::NoteOn(c, n, v) => {

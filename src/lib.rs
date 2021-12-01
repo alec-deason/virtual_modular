@@ -1,7 +1,4 @@
 #![feature(hash_drain_filter)]
-#[macro_use]
-pub mod dynamic_graph;
-pub mod code_generator;
 use generic_array::{
     arr,
     typenum::{U0, U2},

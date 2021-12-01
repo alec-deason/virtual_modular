@@ -33,7 +33,7 @@ impl Node for Stereo {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Constant(pub f32);
 impl Node for Constant {
     type Input = U0;
@@ -41,6 +41,12 @@ impl Node for Constant {
     #[inline]
     fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
         arr![[f32; BLOCK_SIZE]; [self.0; BLOCK_SIZE]]
+    }
+
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        let n: f32 = parameters.parse().map_err(|e| format!("{}", e))?;
+        self.0 = n;
+        Ok(())
     }
 }
 
