@@ -97,10 +97,3 @@ impl InstrumentSynth {
         }
     }
 }
-
-fn variance(vs: &[f32]) -> f32 {
-    let t = vs.iter().sum::<f32>();
-    let m = t / vs.len() as f32;
-    let e = vs.iter().map(|v| (v - m).powi(2)).sum::<f32>();
-    e / vs.len() as f32
-}
