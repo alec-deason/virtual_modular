@@ -14,5 +14,5 @@ virtual_modular_graph = { path = "./graph" }
 dyn-clone = "1"
 
 [dev-dependencies]
-cpal = {version="0.13", features=["jack"]}
+hound = "3.4.0"
 virtual_modular_core_nodes = { path = "./core_nodes" }
