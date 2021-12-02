@@ -5,7 +5,7 @@ This crate provides an interactive version of the virtual_modular system which c
 cargo run --release /path/to/patch/definition.synth
 ```
 
-The system will play the patch until it is stopped. If the patch changes on disk it will be automatically reloaded. This allows you to work on the patch while it is playing and hear changes in real time.
+The system will play the patch until it is stopped. If the patch changes on disk it will automatically be reloaded. This allows you to work on the patch while it is playing and hear changes in real time.
 
 The patch language is declarative and describes the patch's DSP graph as a set of nodes connected by edges.
 

@@ -1,6 +1,6 @@
 virtual_modular is an experimental software modular synth and livecoding environment intended to be used for generative composition, sound design and dynamic music in interactive projects.
 
-In it's current form it's exploratory and while some parts are relatively polished, others are largely dumping grounds for ideas. It is finished enough to be used to make sounds, both interactively and as an embedded sound engine. [This playlist](https://soundcloud.com/user-166463215/sets/realtime-synth) contains some example tracks which are raw recordings of the synth with no post-processing.
+In its current form it's exploratory and while some parts are relatively polished, others are largely dumping grounds for ideas. It is finished enough to be used for composition and sound design, both interactively and as an embedded sound engine. [This playlist](https://soundcloud.com/user-166463215/sets/realtime-synth) contains some example tracks which are raw recordings of the synth with no post-processing.
 
 # To Use
 
