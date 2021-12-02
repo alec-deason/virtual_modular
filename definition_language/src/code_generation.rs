@@ -1,32 +1,12 @@
-use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
+use virtual_modular_graph::NodeTemplate;
 
 use crate::Line;
 
-#[derive(Clone, Debug)]
-enum Edge {
-    Unresolved(Vec<UnresolvedEdge>),
-    Resolved(ResolvedEdge),
-}
-#[derive(Clone, Debug)]
-enum BridgeUse {
-    Input,
-    Output,
-    NA,
-}
-#[derive(Clone, Debug)]
-struct UnresolvedEdge {
-    bridge_use: BridgeUse,
-    dst_port: u32,
-    src_node: String,
-    src_port: u32,
-}
-#[derive(Clone, Debug)]
-struct ResolvedEdge {
-    dst_port: u32,
-    code: String,
-}
-pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (String, u32) {
+pub fn to_rust(
+    node_templates: &HashMap<String, NodeTemplate>,
+    input_code: &[Line],
+) -> (String, u32) {
     let mut nodes = HashMap::new();
     nodes.insert("output".to_string(), ("Output()".to_string(), 2, 0));
 
@@ -35,13 +15,17 @@ pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (Strin
     let mut bridge_map = HashMap::new();
     let mut input_count: HashMap<String, i32> = HashMap::new();
     for line in input_code {
-        if let Line::Node(node_name, node_type, parameters) = line {
+        if let Line::Node {
+            name,
+            ty,
+            static_parameters,
+        } = line
+        {
             nodes.insert(
-                node_name.to_string(),
-                code_for_node(node_type.to_string(), parameters.clone(), node_templates),
+                name.clone(),
+                code_for_node(ty.clone(), static_parameters, node_templates),
             );
-            input_count.insert(node_name.clone(), 0);
-            println!("init_node: {}", node_name);
+            input_count.insert(name.clone(), 0);
         }
     }
     let mut output_code = String::new();
@@ -51,10 +35,6 @@ pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (Strin
     for line in input_code {
         match line {
             Line::BridgeNode(input_name, output_name) => {
-                println!(
-                    "let ({}, {}) = Bridge::<U1>::new();\n",
-                    input_name, output_name
-                );
                 output_code.push_str(&format!(
                     "let ({}, {}) = Bridge::<U1>::new();\n",
                     input_name, output_name
@@ -96,14 +76,11 @@ pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (Strin
                     ));
                     let out_ports = nodes
                         .get(src_node)
-                        .expect(&format!("Node not found: {}", src_node)).2;
+                        .unwrap_or_else(|| panic!("Node not found: {}", src_node))
+                        .2;
                     nodes.insert(
                         bridge_name,
-                        (
-                            format!("bridge_out___{}.clone()", src_node),
-                            0,
-                            out_ports,
-                        ),
+                        (format!("bridge_out___{}.clone()", src_node), 0, out_ports),
                     );
                 } else {
                     consumed_nodes.insert(src_node);
@@ -131,10 +108,10 @@ pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (Strin
         ));
     }
 
-    for (node_name, _ports) in &bridge_map {
+    for node_name in bridge_map.keys() {
         let (_, _, out_ports) = &nodes
             .get(node_name.as_str())
-            .expect(&format!("Node not found: {}", node_name));
+            .unwrap_or_else(|| panic!("Node not found: {}", node_name));
         output_code.push_str(&format!(
             "let (bridge_in___{}, bridge_out___{}) = Bridge::<U{}>::new();\n",
             node_name, node_name, out_ports
@@ -145,8 +122,8 @@ pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (Strin
 
     while !edges.is_empty() {
         let to_process: Vec<_> = input_count
-            .drain_filter(|node, count| *count <= 0)
-            .map(|(node, count)| node)
+            .drain_filter(|_node, count| *count <= 0)
+            .map(|(node, _count)| node)
             .collect();
         if to_process.is_empty() {
             let processed: HashSet<_> = processed.into_iter().collect();
@@ -157,14 +134,14 @@ pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (Strin
             let in_edges = edges.remove(&node_name).unwrap_or_else(Vec::new);
             let (code, in_ports, out_ports) = &nodes
                 .get(&node_name)
-                .expect(&format!("Node not found: {}", node_name));
+                .unwrap_or_else(|| panic!("Node not found: {}", node_name));
 
             let mut needed_ports: HashSet<_> = (0..*in_ports).collect();
             let mut in_code: Vec<_> = in_edges
                 .into_iter()
                 .map(|(src_node, src_port, dst_port)| {
                     needed_ports.remove(dst_port);
-                    let (code, in_ports, out_ports) = &nodes[&src_node];
+                    let (code, _in_ports, _out_ports) = &nodes[&src_node];
                     let mut code = code.clone();
                     if bridge_map.contains_key(&src_node) {
                         code = format!("Pipe({}, bridge_in___{})", code, src_node);
@@ -221,7 +198,7 @@ pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (Strin
                 }
             }
 
-            let mut code = if in_code.is_empty() {
+            let code = if in_code.is_empty() {
                 code.clone()
             } else {
                 format!("Pipe({}, {})", in_code[0], code)
@@ -242,90 +219,47 @@ pub fn to_rust(node_templates: &HashMap<String, , input_code: &[Line]) -> (Strin
             processed.push(node_name.clone());
         }
     }
-    println!("{:?}", edges);
     unreachable!()
 }
 
 fn code_for_node(
     node_type: String,
-    parameters: Option<NodeParameters>,
-    node_templates: &HashMap<String, String>,
+    static_parameters: &Option<String>,
+    node_templates: &HashMap<String, NodeTemplate>,
 ) -> (String, u32, u32) {
     let (input_port_count, output_port_count) = {
         match node_type.as_str() {
             "Output" => (2, 0),
-            "pattern_sequencer" => (1, 5),
-            "burst_sequencer" => (2, 5),
-            "abc_sequence" => (1, 4),
-            "sum_sequencer" => (1, 1),
-            "automation" => (0, 1),
-            "Constant" => (0, 1),
             _ => {
-                let n = node_templates
+                let template = node_templates
                     .get(node_type.as_str())
-                    .expect(node_type.as_str())
+                    .unwrap_or_else(|| panic!("{}", node_type))
                     .clone();
-                (n.input_len() as u32, n.output_len() as u32)
+                (
+                    template.node.input_len() as u32,
+                    template.node.output_len() as u32,
+                )
             }
         }
     };
 
-    let src_node_code = match node_type.as_str() {
-        "Constant" => {
-            if let Some(NodeParameters::Number(n)) = parameters {
-                format!("Constant({:.4})", n)
-            } else {
-                panic!();
-            }
-        }
-        "burst_sequencer" |
-        "pattern_sequencer" => {
-            if let Some(NodeParameters::PatternSequence(p, is_burst)) = parameters {
-                //TODO: Support nested sequencers
-                let dummy = HashMap::new();
-                if is_burst {
-                    format!(
-                        "BurstSequencer::new({})",
-                        p.as_subsequence(&dummy).unwrap().to_rust()
-                    )
-                } else {
-                    format!(
-                        "PatternSequencer::new({})",
-                        p.as_subsequence(&dummy).unwrap().to_rust()
-                    )
-                }
-            } else {
-                panic!();
-            }
-        }
-        "abc_sequence" => {
-            if let Some(NodeParameters::ABCSequence(_, raw_tune)) = parameters {
-                format!(
-                    "ABCSequence::new(\"{}\").unwrap()",
-                    raw_tune
-                )
-            } else {
-                panic!();
-            }
-        }
-        "sum_sequencer" => {
-            if let Some(NodeParameters::SumSequence(p)) = parameters {
-                format!("SumSequencer::new({:?})", p)
-            } else {
-                panic!();
-            }
-        }
-        "automation" => {
-            if let Some(NodeParameters::AutomationSequence(p)) = parameters {
-                let p: Vec<_> = p.iter().map(|p| p.to_rust()).collect();
-                format!("Automation::new(&[{}])", p.join(","))
-            } else {
-                panic!();
-            }
-        }
+    let mut src_node_code = match node_type.as_str() {
         "Output" => "Output()".to_string(),
-        _ => builder.templates[node_type.as_str()].1.to_string(),
+        _ => node_templates[node_type.as_str()].code.clone(),
     };
+
+    if let Some(parameters) = static_parameters {
+        src_node_code = format!(
+            r##"
+                {{
+                    let mut n = {};
+                    n.set_static_parameters("{}").unwrap();
+                    n
+                }}
+        "##,
+            src_node_code, parameters
+        );
+    }
 
     (src_node_code, input_port_count, output_port_count)
 }

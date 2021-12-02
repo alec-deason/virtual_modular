@@ -116,6 +116,7 @@ node_templates! {
         WaveMesh: WaveMesh::default(),
         PennyWhistle: PennyWhistle::default(),
         StereoIdentity: StereoIdentity,
-        StringBodyFilter: StringBodyFilter::default()
+        StringBodyFilter: StringBodyFilter::default(),
+        Constant: Constant::default()
     }
 }
