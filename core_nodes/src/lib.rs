@@ -58,6 +58,7 @@ node_templates! {
     std_nodes {
         ToneHoleFlute: ToneHoleFlute::default(),
         Add: Add,
+        Pow: Pow,
         Compressor: Compressor::default(),
         SoftClip:SoftClip,
         Sub: Sub,

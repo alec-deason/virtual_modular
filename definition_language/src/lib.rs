@@ -32,13 +32,13 @@ pub fn parse(data: &str) -> Result<Vec<Line>, String> {
     }
 
     fn constructor_call<'a>() -> Parser<'a, u8, Expression> {
-        let static_parameters = (sym(b'[')
-            * none_of(b"]")
+        let static_parameters = (sym(b'{')
+            * none_of(b"}")
                 .repeat(0..)
                 .collect()
                 .convert(str::from_utf8)
                 .map(|s| s.to_string())
-            - sym(b']'))
+            - sym(b'}'))
         .opt();
         let inputs = (sym(b'(')
             * whitespace()
@@ -132,8 +132,8 @@ pub fn parse(data: &str) -> Result<Vec<Line>, String> {
     }
 
     fn bridge<'a>() -> Parser<'a, u8, Vec<Line>> {
-        let n_in = seq(b"b{") * none_of(b",").repeat(1..).convert(String::from_utf8) - sym(b',');
-        let n_out = none_of(b"}").repeat(1..).convert(String::from_utf8) - sym(b'}');
+        let n_in = seq(b"b{") * whitespace() * none_of(b",").repeat(1..).convert(String::from_utf8) - whitespace() - sym(b',');
+        let n_out = whitespace() * none_of(b"}").repeat(1..).convert(String::from_utf8) - whitespace() - sym(b'}');
         (n_in + n_out).map(|(n_in, n_out)| vec![Line::BridgeNode(n_in, n_out)])
     }
 
