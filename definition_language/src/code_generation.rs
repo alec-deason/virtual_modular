@@ -244,21 +244,24 @@ fn code_for_node(
     };
 
     let mut src_node_code = match node_type.as_str() {
+        "Constant" => format!("Constant({:?})", static_parameters.as_ref().unwrap().parse::<f32>().unwrap()),
         "Output" => "Output()".to_string(),
         _ => node_templates[node_type.as_str()].code.clone(),
     };
 
-    if let Some(parameters) = static_parameters {
-        src_node_code = format!(
-            r##"
-                {{
-                    let mut n = {};
-                    n.set_static_parameters("{}").unwrap();
-                    n
-                }}
-        "##,
-            src_node_code, parameters
-        );
+    if node_type != "Constant" {
+        if let Some(parameters) = static_parameters {
+            src_node_code = format!(
+                r##"
+                    {{
+                        let mut n = {};
+                        n.set_static_parameters("{}").unwrap();
+                        n
+                    }}
+            "##,
+                src_node_code, parameters
+            );
+        }
     }
 
     (src_node_code, input_port_count, output_port_count)

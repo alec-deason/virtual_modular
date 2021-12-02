@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-code_generation = []
+default = ["code_generation"]
+code_generation = ["virtual_modular_core_nodes"]
 
 
 [dependencies]
@@ -13,6 +14,4 @@ uuid = { version = "0.8.2", features = ["v4"] }
 pom = "3.2.0"
 virtual_modular_graph = { path = "../graph" }
 generic-array = "0.14.4"
-
-[dev-dependencies]
-virtual_modular_core_nodes = { path = "../core_nodes" }
+virtual_modular_core_nodes = { path = "../core_nodes", optional = true }

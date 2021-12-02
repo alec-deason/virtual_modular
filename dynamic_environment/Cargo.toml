@@ -11,7 +11,7 @@ midi = ["jack", "wmidi"]
 virtual_modular = { path = "../" }
 virtual_modular_graph = { path = "../graph" }
 virtual_modular_core_nodes = { path = "../core_nodes", features = ["abc"] }
-virtual_modular_definition_language = { path = "../definition_language" }
+virtual_modular_definition_language = { path = "../definition_language", default-features = false }
 generic-array = "0.14.4"
 pom = "3.2.0"
 uuid = { version = "0.8.2", features = ["v4"] }
