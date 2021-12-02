@@ -28,7 +28,7 @@ In addition to the implicit edges created by expressions it is also possible to 
 (target_node, 0, source_node|0)
 ```
 
-This creates an edge from the 0th output of `source_node` to the 0th input of `target_node`. If there are multiple edges connected to the same input port their values are summed. The `name_name|int` syntax specifies which output should be used in the expression. Output 0 is the default and can be omitted.
+This creates an edge from the 0th output of `source_node` to the 0th input of `target_node`. If there are multiple edges connected to the same input port their values are summed. The `nodename|int` syntax specifies which output should be used in the expression. Output 0 is the default and can be omitted.
 
 Patches have one special node which always exists named `output`. It has two inputs corresponding to the left and right channels. Any signals sent to those inputs will be played out to the computer's speakers.
 
@@ -39,4 +39,4 @@ This system is almost adequate for livecoding performance as it is but there are
 
 # Performance and embeddability
 
-This system performs well enough to play reasonably complex patches in real time on a laptop but does sacrifice some speed for the ability to dynamically reload. It is also intended only as an interactive interface for developing patches and not to be embed in other applications to play back patches. For embedded play back you should compile the patch definition to rust which can then be used in any application and also will have better performance than the dynamic environment. There is a code generator in [virtual_modular_definition_language](../defenition_language) for doing that.
+This system performs well enough to play reasonably complex patches in real time on a laptop but does sacrifice some speed for the ability to dynamically reload. It is also intended only as an interactive interface for developing patches and not to be embed in other applications to play back patches. For embedded play back you should compile the patch definition to rust which can then be used in any application and also will have better performance than the dynamic environment. There is a code generator in [virtual_modular_definition_language](../definition_language) for doing that.
