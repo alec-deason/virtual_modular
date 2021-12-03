@@ -8,8 +8,8 @@ clock=Sine(2*24)
 # Everything inside the {}s is the loop. The (clock) at
 # the end connects our clock node above to the input
 # of the sequence.
-# The pattern notation here is that 1s are hits and ~s are rests
-# groups inside []s occupy a single beat, which makes them
+# The pattern notation here is that 1s are hits and ~s are rests.
+# Groups inside []s occupy a single beat, which makes them
 # 1/8 notes in this example.
 hihat_pattern=Seq{[1 1] [1 1] [1 1] [1 1]}(clock)
 snare_pattern=Seq{~ 1 ~ 1}(clock)
@@ -18,12 +18,12 @@ kick_pattern=Seq{[1 1] ~ 1 ~}(clock)
 # Define a node to which we can send our pre-effects signals
 send=StereoIdentity
 
-# Define the hi-hat sound. It consists of a resonant band pass
+# Define the hi-hat sound. It consists of a resonant bandpass
 # filter being fed enveloped noise with the envelope triggering
 # based on the hihat_pattern sequencer
 hihat=Bp(300, 0.98, Noise(1000)*Ad(0.01, 0.05, Bg(0.9, hihat_pattern|1)))^2
 # Connect the output of the hihat node to the 0th and 1st inputs of
-# the send node. 
+# the send node.
 (send, 0, hihat*0.05)
 (send, 1, hihat*0.05)
 
@@ -34,15 +34,15 @@ snare=Bp(160, 0.9, Noise(1000)*Ad(0.01, 0.01, snare_pattern|1))+Noise(5000*Resca
 
 # Similar to the other drums but energized by a saw wave rather than
 # a noise pulse to give it a cleaner sound and with an additional
-# high pass to cut out some of the intense low end.
+# high-pass to cut out some of the intense low end.
 kick=Hp(100, 0, Bp(80, 0.97, Saw(100)*Ad(0.01, 0.01, kick_pattern|1)))
 (send, 0, kick)
 (send, 1, kick)
 
 
-# pass the signal accumulated in the send node into a short reverb
+# Pass the signal accumulated in the send node into a short reverb.
 reverb=Reverb(0.1, 0.9, send|0, send|1)
 
-# Mix the dry send with the reverb and connect the result to the output
+# Mix the dry send with the reverb and connect the result to the output.
 (output, 0, reverb|0*0.3 + send|0)
 (output, 1, reverb|1*0.3 + send|1)

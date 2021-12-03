@@ -5,4 +5,4 @@ This crate provides the parser for the patch definition language used by [virtua
 cargo run /path/to/patch/definition.synth /path/to/output.rs
 ```
 
-The current version outputs a block of rust which require additional `use` statements and setup to be useful. At some point I will put together a more complete build system but that is very much future work.
+The current version outputs a block of rust which requires additional `use` statements and setup to be useful. At some point I will put together a more complete build system but that is very much future work.

@@ -1,30 +1,30 @@
-# A wandering generative melody in C major with basic pad accompanyment
+# A wandering generative melody in C major with basic pad accompaniment.
 
-# Define a 120BPM clock using a 2hz sine. Unlike in the drum example
-# this patch doesn't use sequencers so it doesn't need a PPQ clock 
+# Define a 120BPM clock using a 2hz sine. Unlike in the drum example,
+# this patch doesn't use sequencers so it doesn't need a PPQ clock.
 clock=Sine(2)
 
 # Define a random walk which resets to 0 every 8 beats
 note=Acc(Rescale(-3, 3, PNoise(100)), Bg(0.9, clock), 0, Pd(8, clock))
-# Quantize the random walk to a C Major scale, shifted up two octaves
+# Quantize the random walk to a C Major scale, shifted up two octaves.
 pitch=ScaleDegreeMajor(note)*4
 
-# Define a node to which we can send our pre-effects signals
+# Define a node to which we can send our pre-effects signals.
 send=StereoIdentity
 
 # A simple sine wave playing the quantized pitch with an envelope
-# which triggers everytime the pitch changes. Those
+# which triggers every time the pitch changes.
 melody_voice=Sine(pitch)*Ad(0.01, 0.5, PulseOnChange(pitch))
-# Run the voice through a 1/16th note delay
+# Run the voice through a 1/16th note delay.
 melody_delay=Delay(0.25, melody_voice + melody_delay_out)
 # Since the DSP graph cannot contain cycles this creates
 # a one-sample delay which breaks the cycle. Signals
-# connected to the in half will be routed out of the out half
+# connected to the in half will be routed out of the out half.
 b{melody_delay_in, melody_delay_out}
-# Route the delay output into the cycle breaking node with a
+# Route the delay output into the cycle-breaking node with a
 # bit of ring modulation to add interest.
 (melody_delay_in, 0, (melody_delay * 0.1)*Sine(pitch*0.25) + melody_delay * 0.5)
-# mix the delay and dry voice together and send them along
+# Mix the delay and dry voice together and send them along.
 (send,0,melody_delay*0.2 + melody_voice*0.25)
 (send,1,melody_delay*0.2 + melody_voice*0.25)
 
@@ -33,7 +33,7 @@ b{melody_delay_in, melody_delay_out}
 chord_root=Sh(Pd(4, clock), note)
 
 # Define three saw waves tuned to a major scale and accumulate the
-# result into a single node for processing
+# result into a single node for processing.
 chord=StereoIdentity
 
 pad_voice_1=Saw(ScaleDegreeMajor(chord_root-7))
@@ -48,13 +48,13 @@ pad_voice_3=Saw(ScaleDegreeMajor(chord_root-3))
 (chord,0,pad_voice_3)
 (chord,1,pad_voice_3)
 
-# Process the full chord voice through a band pass filter with
-# a modulated cutoff to make the swelling pad sound
+# Process the full chord voice through a bandpass filter with
+# a modulated cutoff to make the swelling pad sound.
 (send,0,Bp(300*Rescale(0.2,1,Ad(1, 1, Pd(4, clock))), 0.5, chord|0*2)*0.05)
 (send,1,Bp(300*Rescale(0.2,1,Ad(1, 1, Pd(4, clock))), 0.5, chord|1*2)*0.05)
 
 
-# Process the full output through a reverb and mix the result
+# Process the full output through a reverb, mix the result
 # with the dry signal and send it along to the output.
 reverb=Reverb(0.1, 0.9, send|0, send|1)
 
