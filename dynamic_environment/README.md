@@ -32,7 +32,7 @@ This creates an edge from the 0th output of `source_node` to the 0th input of `t
 
 Patches have one special node which always exists named `output`. It has two inputs corresponding to the left and right channels. Any signals sent to those inputs will be played out to the computer's speakers.
 
-There is currently no documented list of node types beyond the code in [virtual_modular_core_nodes](../core_nodes) and that, unfortunately, is unlikely to change until the system stabilises a bit more. For some examples of what is possible look at the demonstration patches in the [examples](./examples) directory.
+There is currently no documented list of node types beyond the code in [virtual_modular_core_nodes](../core_nodes/src/lib.rs). Once the system stabilises a bit more I'll write up a reference for the standard nodes. For some examples of what is possible look at the demonstration patches in the [examples](./examples) directory.
 
 # Livecoding limitations
 There are a few gaps before the system is useful for livecoding performance. Nodes preserve their state between patch reloads unless the definition of the node itself changes in any way in which case it loses all state. This is most problematic with sequencers which lose their place and will become out of sync with other sequences after they are reloaded. There is also no way to stage or beat sync changes to the graph. I plan to work on both those issues in the future because it would be super neat if this was a performable instrument.
