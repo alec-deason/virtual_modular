@@ -32,7 +32,7 @@ b{melody_delay_in, melody_delay_out}
 # slower harmonic motion under the melody notes.
 chord_root=Sh(Pd(4, clock), note)
 
-# Define three saw waves tuned to a major scale and accumulate the
+# Define three saw waves tuned to triads and accumulate the
 # result into a single node for processing.
 chord=StereoIdentity
 
