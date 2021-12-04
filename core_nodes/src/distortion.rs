@@ -40,57 +40,6 @@ impl Node for SoftClip {
 }
 
 #[derive(Clone, Default)]
-pub struct Compressor {
-    triggered: bool,
-    time: f32,
-    current: f32,
-    per_sample: f32,
-}
-
-impl Node for Compressor {
-    type Input = U5;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (attack, decay, threshold, ratio, signal) =
-            (input[0], input[1], input[2], input[3], input[4]);
-        let mut r = [0.0; BLOCK_SIZE];
-        for (i, r) in r.iter_mut().enumerate() {
-            let attack = attack[i];
-            let decay = decay[i];
-            let threshold = threshold[i];
-            let ratio = ratio[i];
-            let signal = signal[i];
-            if signal.abs() > threshold {
-                if !self.triggered {
-                    self.triggered = true;
-                    self.time = 0.0;
-                }
-            } else if self.triggered {
-                self.triggered = false;
-                self.time = 0.0;
-            }
-            self.time += self.per_sample;
-            let v = if self.triggered {
-                self.time.min(attack) / attack
-            } else {
-                let t = self.time.min(decay) / decay;
-                1.0 - t
-            };
-            self.current = self.current * 0.001 + (1.0 - ratio * v) * 0.999;
-            assert!(self.current.is_finite());
-            *r = self.current;
-        }
-
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.per_sample = 1.0 / rate;
-    }
-}
-
-#[derive(Clone, Default)]
 pub struct MidSideEncoder;
 
 impl Node for MidSideEncoder {

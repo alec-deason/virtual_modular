@@ -223,14 +223,14 @@ impl Node for QuadSwitch {
 }
 
 #[derive(Copy, Clone, Default)]
-pub struct Portamento {
+pub struct Slew {
     current: f32,
     target: f32,
     remaining: u32,
     delta: f32,
     per_sample: f32,
 }
-impl Node for Portamento {
+impl Node for Slew {
     type Input = U2;
     type Output = U1;
 
