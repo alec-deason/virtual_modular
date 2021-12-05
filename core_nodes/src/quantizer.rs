@@ -1,115 +1,112 @@
 use generic_array::{arr, typenum::*};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
-const C0: f32 = 16.35;
-#[derive(Clone)]
-pub struct Quantizer {
-    values: Vec<f32>,
-}
-
-impl Quantizer {
-    pub fn new(values: &[f32]) -> Self {
-        Self {
-            values: values.to_vec(),
-        }
-    }
-}
-
-impl Node for Quantizer {
-    type Input = U1;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0f32; BLOCK_SIZE];
-        for (i, r) in r.iter_mut().enumerate() {
-            let input = input[0][i].max(0.0);
-            let freq = C0 * 2.0f32.powf(input);
-
-            let octave = input.floor();
-            let mut min_d = f32::INFINITY;
-            let mut min_freq = 0.0;
-            for v in &self.values {
-                let v = v * 2.0f32.powf(octave);
-                let d = (v - freq).abs();
-                if d < min_d {
-                    min_d = d;
-                    min_freq = v;
-                }
-            }
-            *r = min_freq;
-        }
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-}
+const A0: f32 = 27.50;
+const SEMITONE: f32 = 1.05946;
 
 #[derive(Clone)]
 pub struct DegreeQuantizer {
-    values: Vec<f32>,
+    pitches: Vec<f32>,
+    cache_key: (f32, f32),
+    cached_value: f32,
 }
 
-impl DegreeQuantizer {
-    pub fn new(values: &[f32]) -> Self {
+impl Default for DegreeQuantizer {
+    fn default() -> Self {
         Self {
-            values: values.to_vec(),
+            pitches: Vec::new(),
+            cache_key: (f32::NAN, f32::NAN),
+            cached_value: 0.0
         }
-    }
-
-    pub fn chromatic() -> Self {
-        let mut notes = Vec::with_capacity(12);
-        for i in 0..12 {
-            notes.push(16.35 * 2.0f32.powf((i * 100) as f32 / 1200.0));
-        }
-        Self::new(&notes)
     }
 }
 
 impl Node for DegreeQuantizer {
-    type Input = U1;
+    type Input = U2;
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let degree = input[0];
+        let root = input[1];
         let mut r = [0.0; BLOCK_SIZE];
         for (i, r) in r.iter_mut().enumerate() {
-            let input = input[0][i];
-            let degree = (input + self.values.len() as f32 * 4.0).max(0.0).round() as usize;
+            let degree = degree[i];
+            let root = root[i];
+            if (degree, root) != self.cache_key {
+                self.cache_key = (degree, root);
+                let degree = (degree + self.pitches.len() as f32 * 4.0).max(0.0).round() as usize;
 
-            let octave = degree / self.values.len();
-            let idx = degree % self.values.len();
-            *r = self.values[idx] * 2.0f32.powi(octave as i32);
+                let octave = degree / self.pitches.len();
+                let idx = degree % self.pitches.len();
+                self.cached_value = self.pitches[idx] * 2.0f32.powi(octave as i32) * SEMITONE.powi(root as i32);
+            }
+            *r = self.cached_value;
         }
 
         arr![[f32; BLOCK_SIZE]; r]
     }
-}
 
-#[derive(Clone)]
-pub struct TritaveDegreeQuantizer {
-    values: Vec<f32>,
-}
-
-impl TritaveDegreeQuantizer {
-    pub fn new(values: &[f32]) -> Self {
-        Self {
-            values: values.to_vec(),
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        let mut new_pitches = vec![A0];
+        for n in parameters.split(" ") {
+            let next_value = match n {
+                "W" => new_pitches[new_pitches.len()-1] * SEMITONE.powi(2),
+                "H" => new_pitches[new_pitches.len()-1] * SEMITONE,
+                _ => return Err(format!("Unknown interval {}", n))
+            };
+            new_pitches.push(next_value);
         }
+        self.pitches = new_pitches;
+        Ok(())
     }
 }
 
-impl Node for TritaveDegreeQuantizer {
-    type Input = U1;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = [0.0; BLOCK_SIZE];
-        for (i, r) in r.iter_mut().enumerate() {
-            let input = input[0][i];
-            let degree = (input + self.values.len() as f32 * 2.0).max(0.0).round() as usize;
+#[cfg(test)]
+mod quantizer_tests {
+    use super::*;
 
-            let octave = degree / self.values.len();
-            let idx = degree % self.values.len();
-            *r = self.values[idx] * 3.0f32.powi(octave as i32);
+    #[test]
+    fn basic() {
+        let mut quantizer = DegreeQuantizer::default();
+        // major scale
+        quantizer.set_static_parameters("W W H W W W").unwrap();
+
+        for (degree, expected) in &[(0, 440.0), (1,  493.88), (2,  554.37), (3, 587.33), (4,  659.25), (5,  739.99), (6,  830.61)] {
+            // first degree, a as root
+            let input = arr![[f32; BLOCK_SIZE]; [*degree as f32; BLOCK_SIZE], [0.0f32; BLOCK_SIZE]];
+            let output = quantizer.process(input);
+            for i in 0..BLOCK_SIZE {
+                assert!(output[0][i] - expected < 0.03);
+            }
+            // again up an octave
+            let input = arr![[f32; BLOCK_SIZE]; [*degree as f32 + 7.0; BLOCK_SIZE], [0.0f32; BLOCK_SIZE]];
+            let output = quantizer.process(input);
+            for i in 0..BLOCK_SIZE {
+                assert!(output[0][i] - expected*2.0 < 0.03, "Got {}, expected {}", output[0][i], expected*2.0);
+            }
         }
-        arr![[f32; BLOCK_SIZE]; r]
+    }
+
+    #[test]
+    fn root_shift() {
+        let mut quantizer = DegreeQuantizer::default();
+        // natural minor scale
+        quantizer.set_static_parameters("W H W W H W").unwrap();
+
+        for (degree, expected) in &[(0, 261.63), (1, 293.66), (2, 311.13), (3, 349.23), (4, 392.00), (5, 415.30), (6, 466.16)] {
+            // first degree, c as root
+            let input = arr![[f32; BLOCK_SIZE]; [*degree as f32; BLOCK_SIZE], [-9.0f32; BLOCK_SIZE]];
+            let output = quantizer.process(input);
+            for i in 0..BLOCK_SIZE {
+                assert!(output[0][i] - expected < 0.03, "Got {}, expected {}", output[0][i], expected);
+            }
+            // again up an octave
+            let input = arr![[f32; BLOCK_SIZE]; [*degree as f32 + 7.0; BLOCK_SIZE], [-9.0f32; BLOCK_SIZE]];
+            let output = quantizer.process(input);
+            for i in 0..BLOCK_SIZE {
+                assert!(output[0][i] - expected*2.0 < 0.03, "Got {}, expected {}", output[0][i], expected*2.0);
+            }
+        }
     }
 }
 
