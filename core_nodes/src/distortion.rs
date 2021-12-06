@@ -38,6 +38,28 @@ impl Node for SoftClip {
         arr![[f32; BLOCK_SIZE]; out_left, out_right]
     }
 }
+#[derive(Copy, Clone)]
+pub struct EvenHarmonicDistortion;
+impl Node for EvenHarmonicDistortion {
+    type Input = U2;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let signal = input[0];
+        let gain = input[1];
+        let mut r = [0.0; BLOCK_SIZE];
+        for (i, r) in r.iter_mut().enumerate() {
+            let signal = signal[i];
+            *r = signal;
+            if signal > 0.0 {
+                let gain = gain[i];
+                *r *= gain;
+            }
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct MidSideEncoder;

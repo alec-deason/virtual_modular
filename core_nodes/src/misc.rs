@@ -14,6 +14,30 @@ impl Node for Log {
     }
 }
 
+#[derive(Copy, Clone, Default)]
+pub struct LogTrigger {
+    triggered: bool
+}
+
+impl Node for LogTrigger {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        for r in &input[0] {
+            if *r > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    println!("Trigger");
+                }
+            } else {
+                self.triggered = false;
+            }
+        }
+        input
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum Interpolation {
     Constant { value: f32, duration: f32 },

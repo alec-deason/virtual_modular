@@ -94,21 +94,54 @@ pub struct ModableDelay {
     rate: f32,
 }
 impl Node for ModableDelay {
-    type Input = U2;
+    type Input = U3;
     type Output = U1;
 
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (len, sig) = (input[0], input[1]);
+        let (len, sig, feedback) = (input[0], input[1], input[2]);
         let mut r = [0.0; BLOCK_SIZE];
         for (i, r) in r.iter_mut().enumerate() {
             let len = len[i].max(0.000001);
             self.line.set_delay((len * self.rate) as f64);
-            let sig = sig[i];
-            self.line.tick(sig as f64);
             *r = self.line.current() as f32;
+            let sig = sig[i] + *r * feedback[i];
+            self.line.tick(sig as f64);
         }
         arr![[f32; BLOCK_SIZE]; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.rate = rate;
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ModablePingPong {
+    left: DelayLine,
+    right: DelayLine,
+    rate: f32,
+}
+impl Node for ModablePingPong {
+    type Input = U4;
+    type Output = U2;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (len, sig_l, sig_r, feedback) = (input[0], input[1], input[2], input[3]);
+        let mut left = [0.0; BLOCK_SIZE];
+        let mut right = [0.0; BLOCK_SIZE];
+        for (i, (l,r)) in left.iter_mut().zip(&mut right).enumerate() {
+            let len = len[i].max(0.000001) / 2.0;
+            self.left.set_delay((len * self.rate) as f64);
+            self.right.set_delay((len * self.rate) as f64);
+            *l = self.left.current() as f32;
+            *r = self.right.current() as f32;
+            let feedback = feedback[i] as f64;
+            self.left.tick((sig_l[i] as f64 + *r as f64) * feedback);
+            self.right.tick((sig_r[i] as f64 + *l as f64) * feedback);
+        }
+        arr![[f32; BLOCK_SIZE]; left, right]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
