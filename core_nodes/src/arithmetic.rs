@@ -23,3 +23,15 @@ binary_op!(Div, |a, b| (a / b));
 binary_op!(Add, |a, b| (a + b));
 binary_op!(Sub, |a, b| (a - b));
 binary_op!(Pow, |a: f32, b| (a.powf(b)));
+binary_op!(And, |a, b| if a > 0.5 && b > 0.5 { 1.0 } else { 0.0 });
+binary_op!(Or, |a, b| if a > 0.5 || b > 0.5 { 1.0 } else { 0.0 });
+binary_op!(Xor, |a, b| {
+    let a = a > 0.5;
+    let b = b > 0.5;
+    if (a || b) && !(a && b) { 1.0 } else { 0.0 }
+});
+binary_op!(Nand, |a, b| {
+    let a = a > 0.5;
+    let b = b > 0.5;
+    if !(a && b) { 1.0 } else { 0.0 }
+});

@@ -60,13 +60,25 @@ impl Node for ADEnvelope {
     }
 }
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone)]
 pub struct ADSREnvelope {
     time: f32,
     triggered: bool,
     current: f32,
     per_sample: f32,
 }
+
+impl Default for ADSREnvelope {
+    fn default() -> Self {
+        Self {
+            time: f32::INFINITY,
+            triggered: false,
+            current: 0.0,
+            per_sample: 0.0,
+        }
+    }
+}
+
 impl Node for ADSREnvelope {
     type Input = U5;
     type Output = U1;

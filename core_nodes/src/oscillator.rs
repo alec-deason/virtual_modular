@@ -237,3 +237,50 @@ impl Node for SquareWave {
         self.per_sample = 1.0 / rate;
     }
 }
+
+// Based on: http://till.com/articles/sineshaper/
+#[derive(Copy, Clone)]
+pub struct TanhShaper {
+    phase: f64,
+    per_sample: f64,
+}
+
+impl Default for TanhShaper {
+    fn default() -> Self {
+        Self {
+            phase: thread_rng().gen(),
+            per_sample: 1.0 / 44100.0,
+        }
+    }
+}
+
+impl Node for TanhShaper {
+    type Input = U2;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let freq = input[0];
+        let param = input[1];
+
+        let mut r = [0.0; BLOCK_SIZE];
+        for (i, r) in r.iter_mut().enumerate() {
+            let x = if self.phase < 0.5 {
+                self.phase as f32 * 4.0 - 1.0
+            } else {
+                (1.0 - self.phase as f32) * 4.0 - 1.0
+            } * std::f32::consts::PI * 0.5;
+            *r = 9.0*(0.3833*x).tanh() - 3.519*param[i]*x;
+            self.phase += self.per_sample * freq[i] as f64;
+            while self.phase > 1.0 {
+                self.phase -= 1.0;
+            }
+        }
+
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0 / rate as f64;
+    }
+}
