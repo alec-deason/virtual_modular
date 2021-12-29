@@ -119,6 +119,7 @@ node_templates! {
         Seq: PatternSequencer::default(),
         StepSeq: StepSequencer::default(),
         Burst: BurstSequencer::default(),
+        Choice: Choice::default(),
         BurstTrigger: BurstTrigger::default(),
         TapsAndStrikes: TapsAndStrikes::default(),
         Folder: Folder,

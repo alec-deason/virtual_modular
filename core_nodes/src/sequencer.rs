@@ -587,3 +587,79 @@ impl Node for StepSequencer {
         Ok(())
     }
 }
+
+#[derive(Copy, Clone, Debug)]
+struct ChoiceItem {
+    value: f32,
+    selection_probability: f32,
+    firing_probability: f32,
+}
+#[derive(Clone, Default)]
+pub struct Choice {
+    options: Vec<ChoiceItem>,
+    current: f32,
+    firing: f32,
+    triggered: bool,
+}
+
+
+impl Node for Choice {
+    type Input = U1;
+    type Output = U2;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let trigger = input[0];
+        let mut r = <Ports<Self::Output> >::default();
+        for i in 0..BLOCK_SIZE {
+            if trigger[i] > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    let mut rng = thread_rng();
+                    let i = self.options.choose_weighted(&mut rng, |i| i.selection_probability).unwrap();
+                    self.current = i.value;
+                    self.firing = if i.firing_probability > rng.gen() { 1.0 } else { 0.0 };
+                }
+            } else {
+                self.triggered = false;
+            }
+            r[0][i] = self.current;
+            r[1][i] = self.firing;
+        }
+        r
+    }
+
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        self.options = parse_choices(parameters)?;
+        Ok(())
+    }
+}
+
+fn parse_choices(data: &str) -> Result<Vec<ChoiceItem>, String> {
+    use pom::parser::Parser;
+    use pom::parser::*;
+    use std::str::{self, FromStr};
+    fn number<'a>() -> Parser<'a, u8, f32> {
+        let integer = one_of(b"0123456789").repeat(0..);
+        let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
+        let exp = one_of(b"eE") + one_of(b"+-").opt() + one_of(b"0123456789").repeat(1..);
+        let number = sym(b'-').opt() + integer + frac.opt() + exp.opt();
+        number
+            .collect()
+            .convert(str::from_utf8)
+            .convert(f32::from_str)
+            .name("number")
+    }
+    fn item<'a>() -> Parser<'a, u8, ChoiceItem> {
+        (number() - sym(b'|') + number() + (sym(b'|') * number()).opt()).map(|((value, selection_probability), firing_probability)| {
+            ChoiceItem {
+                value,
+                selection_probability,
+                firing_probability: firing_probability.unwrap_or(1.0)
+            }
+        })
+    }
+    let parsed = list(item(), sym(b' ').repeat(1..))
+        .parse(data.as_bytes())
+        .map_err(|e| format!("{:?}", e));
+    parsed
+}
