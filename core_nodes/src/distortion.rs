@@ -21,24 +21,6 @@ impl Node for Folder {
 }
 
 #[derive(Copy, Clone)]
-pub struct SoftClip;
-impl Node for SoftClip {
-    type Input = U2;
-    type Output = U2;
-
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (l, r) = (input[0], input[1]);
-        let mut out_left = [0.0; BLOCK_SIZE];
-        let mut out_right = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            out_left[i] = l[i].tanh();
-            out_right[i] = r[i].tanh();
-        }
-        arr![[f32; BLOCK_SIZE]; out_left, out_right]
-    }
-}
-#[derive(Copy, Clone)]
 pub struct EvenHarmonicDistortion;
 impl Node for EvenHarmonicDistortion {
     type Input = U2;
@@ -144,5 +126,27 @@ impl Node for MonoPan {
         }
 
         arr![[f32; BLOCK_SIZE]; r_l, r_r]
+    }
+}
+
+
+#[derive(Clone, Default)]
+pub struct SineToSine(crate::Simper);
+
+impl Node for SineToSine {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, mut input: Ports<Self::Input>) -> Ports<Self::Output> {
+        self.0.set_parameters(200.0, 0.0);
+        for r in input[0].iter_mut() {
+            let v = r.sin();
+            *r = self.0.low(v).asin();
+        }
+        input
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.0.set_sample_rate(rate);
     }
 }

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use virtual_modular_graph::NodeTemplate;
+use generic_array::{arr, typenum::*};
+use virtual_modular_graph::{Node, Ports, BLOCK_SIZE, NodeTemplate};
 
 #[cfg(feature = "abc")]
 pub mod abc;
-pub mod arithmetic;
 pub mod clock;
 pub mod computation;
 pub mod delay_and_reverb;
@@ -21,7 +21,6 @@ pub mod topological;
 pub mod tuning;
 pub mod waveguide;
 
-pub use arithmetic::*;
 pub use clock::*;
 pub use computation::*;
 pub use delay_and_reverb::*;
@@ -57,17 +56,29 @@ macro_rules! node_templates {
 node_templates! {
     std_nodes {
         ToneHoleFlute: ToneHoleFlute::default(),
-        Add: Add,
-        Pow: Pow,
-        SoftClip:SoftClip,
-        Sub: Sub,
-        Mul: Mul,
-        Div: Div,
-        And: And,
-        Or: Or,
-        Xor: Xor,
-        Nand: Nand,
+        Add: FnNode::new(|(a, b)| a+b),
+        Sub: FnNode::new(|(a, b)| a-b),
+        Mul: FnNode::new(|(a, b)| a*b),
+        Div: FnNode::new(|(a, b)| a/b),
+        Pow: FnNode::new(|(a, b):(f32, f32)| a.powf(b)),
+        And: FnNode::new(|(a, b)| if a > 0.5 && b > 0.5 { 1.0 } else { 0.0 }),
+        Or: FnNode::new(|(a, b)| if a > 0.5 || b > 0.5 { 1.0 } else { 0.0 }),
+        Xor: FnNode::new(|(a, b)| {
+            let a = a > 0.5;
+            let b = b > 0.5;
+            if (a || b) && !(a && b) { 1.0 } else { 0.0 }
+        }),
+        Nand: FnNode::new(|(a, b)| {
+            let a = a > 0.5;
+            let b = b > 0.5;
+            if !(a && b) { 1.0 } else { 0.0 }
+        }),
+        SineS: FnNode::new(|(a,):(f32,)| a.sin()),
+        ASineS: FnNode::new(|(a,):(f32,)| a.asin()),
+        TanhS: FnNode::new(|(a,):(f32,)| a.tanh()),
+        LogS: FnNode::new(|(a,):(f32,)| a.log2()),
         Imp: Impulse::default(),
+        NCube: NCube::default(),
         RMS: RMS::default(),
         Compressor: Compressor::default(),
         CXor: CXor,
@@ -106,7 +117,9 @@ node_templates! {
         C: Identity,
         QuadSwitch: QuadSwitch::default(),
         Seq: PatternSequencer::default(),
+        StepSeq: StepSequencer::default(),
         Burst: BurstSequencer::default(),
+        BurstTrigger: BurstTrigger::default(),
         TapsAndStrikes: TapsAndStrikes::default(),
         Folder: Folder,
         EuclidianPulse: EuclidianPulse::default(),
@@ -124,5 +137,58 @@ node_templates! {
         StereoIdentity: StereoIdentity,
         StringBodyFilter: StringBodyFilter::default(),
         Constant: Constant::default()
+    }
+}
+
+#[derive(Clone)]
+pub struct FnNode<A:Clone, R:Clone>(R, std::marker::PhantomData<A>);
+impl<A: Clone, R: FnMut(A) -> f32 + Clone> FnNode<A, R> {
+    pub fn new(func: R) -> Self {
+        Self(func, Default::default())
+    }
+}
+
+impl<F: FnMut() -> f32 + Clone> Node for FnNode<(), F> {
+    type Input = U0;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, _input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let mut r = [0.0; BLOCK_SIZE];
+        for r in r.iter_mut() {
+            *r = self.0();
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+}
+
+impl<F: FnMut((f32,)) -> f32 + Clone> Node for FnNode<(f32,), F> {
+    type Input = U1;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let a = input[0];
+        let mut r = [0.0; BLOCK_SIZE];
+        for (i, r) in r.iter_mut().enumerate() {
+            *r = self.0((a[i],));
+        }
+        arr![[f32; BLOCK_SIZE]; r]
+    }
+}
+
+impl<F: FnMut((f32, f32)) -> f32 + Clone> Node for FnNode<(f32, f32), F> {
+    type Input = U2;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let a = input[0];
+        let b = input[1];
+        let mut r = [0.0; BLOCK_SIZE];
+        for (i, r) in r.iter_mut().enumerate() {
+            *r = self.0((a[i], b[i]));
+        }
+        arr![[f32; BLOCK_SIZE]; r]
     }
 }

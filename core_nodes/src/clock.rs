@@ -110,3 +110,52 @@ impl Node for PulseOnChange {
         arr![[f32; BLOCK_SIZE]; r]
     }
 }
+
+#[derive(Copy, Clone, Default)]
+pub struct BurstTrigger {
+    triggered: bool,
+    spacing: f64,
+    clock: f64,
+    per_sample: f64,
+    remaining: u32,
+}
+
+impl Node for BurstTrigger {
+    type Input = U3;
+    type Output = U2;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let trigger = input[0];
+        let count = input[1];
+        let spacing = input[2];
+        let mut r = <Ports<Self::Output> >::default();
+        for i in 0..BLOCK_SIZE {
+            if self.remaining > 0 {
+                self.clock += self.per_sample;
+            }
+            if trigger[i] > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.remaining = count[i] as u32;
+                    self.spacing = spacing[i] as f64;
+                    self.clock = self.spacing;
+                }
+            } else {
+                self.triggered = false;
+            }
+            if self.remaining > 0 && self.clock >= self.spacing {
+                self.remaining -= 1;
+                self.clock = 0.0;
+                r[0][i] = 1.0;
+                if self.remaining == 0 {
+                    r[1][i] = 1.0;
+                }
+            }
+        }
+        r
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.per_sample = 1.0/rate as f64;
+    }
+}

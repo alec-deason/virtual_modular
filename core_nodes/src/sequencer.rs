@@ -409,3 +409,181 @@ fn parse_sequence(data: &str) -> Result<Subsequence, String> {
         .map_err(|e| format!("{:?}", e));
     parsed
 }
+
+/*
+#[derive(Clone, Debug)]
+enum SequencePattern {
+    Item(SequenceResult, u64),
+    Cycle(Vec<SequencePattern>),
+    List(Vec<SequencePattern>),
+    Choice(Vec<SequencePattern>)
+}
+
+#[derive(Copy, Clone, Debug)]
+enum SequenceResult {
+    Value(f32),
+    Rest,
+    Overflow(u64)
+}
+
+impl SequencePattern {
+    fn get<R: Rng>(&self, mut clock: u64, iteration: u64, rng: &mut R) -> SequenceResult {
+        match self {
+            SequencePattern::Item(value, duration) => if clock <= duration { *value } else { SequenceResult::Overflow(clock - duration) }
+            SequencePattern::Cycle(sub_patterns) => {
+                let idx = iteration % sub_patterns.len();
+                sub_patterns[idx].get(clock, iteration, rng)
+            }
+            SequencePattern::List(sub_patterns) => {
+                for p in sub_patterns {
+                    let result = p.get(clock, iteration, rng);
+                    if let SequenceResult::Overflow(amount) = result {
+                        clock -= result;
+                    } else {
+                        return result
+                    }
+                }
+                SequenceResult::Overflow(clock)
+            }
+            SequencePattern::Choice(sub_patterns) => {
+                sub_patterns.choice(rng).unwrap().get(clock, iteration, rng)
+            }
+        }
+    }
+}
+*/
+
+/*
+pub struct GlobalClockSequencer {
+    clock: u32,
+    sequence: SequencePattern,
+    iteration: u64,
+    iteration_seed: u64,
+}
+
+impl GlobalClockSequencer {
+    fn tick(&mut self) {
+        let result = self.sequence.get(clock, &mut rng);
+    }
+}
+*/
+
+#[derive(Clone)]
+pub struct NCube {
+    data: Vec<f32>,
+    width: usize,
+    cache: [f32; 16],
+    a: f32,
+    r: f32,
+    a_per_trigger: f32,
+    triggered: bool,
+}
+
+impl Default for NCube {
+    fn default() -> Self {
+        let width = 40;
+        let mut rng = thread_rng();
+        let mut s = Self {
+            data: (0..width*width*16).map(|_| rng.gen()).collect(),
+            width,
+            cache: Default::default(),
+            a: 0.0,
+            r: 5.0,
+            a_per_trigger: std::f32::consts::TAU / 100.0,
+            triggered: false,
+        };
+        s.rebuild_cache();
+        s
+    }
+}
+
+impl NCube {
+    fn rebuild_cache(&mut self) {
+        let x = self.a.cos() * self.r;
+        let y = self.a.sin() * self.r;
+
+        let x_l = (x.ceil() - x)/(x.ceil() - x.floor());
+        let x_r = (x - x.floor())/(x.ceil() - x.floor());
+        let y_l = (y.ceil() - y)/(y.ceil() - y.floor());
+        let y_r = (y - y.floor())/(y.ceil() - y.floor());
+        let len = self.cache.len();
+
+        for i in 0..len {
+            let a = self.data[(x.floor() as usize + y.floor() as usize * self.width) * len + i];
+            let b = self.data[(x.ceil() as usize + y.floor() as usize * self.width) * len + i];
+            let c = self.data[(x.ceil() as usize + y.ceil() as usize * self.width) * len + i];
+            let d = self.data[(x.floor() as usize + y.ceil() as usize * self.width) * len + i];
+
+
+            let l = x_l * a + x_r * b;
+            let h = x_l * d + x_r * c;
+            self.cache[i] = y_l * l + y_r * h;
+        }
+    }
+}
+
+
+impl Node for NCube {
+    type Input = U2;
+    type Output = U16;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let trigger = input[0];
+        let radius = input[1];
+        let mut r = <Ports<Self::Output> >::default();
+        for i in 0..BLOCK_SIZE {
+            if trigger[i] > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.a += self.a_per_trigger;
+                    self.r = radius[i] * 9.0;
+                    self.rebuild_cache();
+                }
+            } else {
+                self.triggered = false;
+            }
+            r.iter_mut().zip(&self.cache).for_each(|(r, v)| r[i] = *v);
+        }
+        r
+    }
+
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct StepSequencer {
+    steps: Vec<f32>,
+    idx: usize,
+    triggered: bool,
+}
+
+
+impl Node for StepSequencer {
+    type Input = U1;
+    type Output = U1;
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let trigger = input[0];
+        let mut r = <Ports<Self::Output> >::default();
+        for (i, r) in r[0].iter_mut().enumerate() {
+            if trigger[i] > 0.5 {
+                if !self.triggered {
+                    self.triggered = true;
+                    self.idx = (self.idx + 1) % self.steps.len();
+                }
+            } else {
+                self.triggered = false;
+            }
+            *r = self.steps[self.idx];
+        }
+        r
+    }
+
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        self.steps = parameters.split_terminator(' ').filter_map(|v| v.parse::<f32>().ok()).collect();
+        self.idx = self.idx % self.steps.len();
+        Ok(())
+    }
+}
