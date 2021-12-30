@@ -129,7 +129,6 @@ impl Node for MonoPan {
     }
 }
 
-
 #[derive(Clone, Default)]
 pub struct SineToSine(crate::Simper);
 

@@ -16,7 +16,7 @@ impl Default for DegreeQuantizer {
         Self {
             pitches: Vec::new(),
             cache_key: (f32::NAN, f32::NAN),
-            cached_value: 0.0
+            cached_value: 0.0,
         }
     }
 }
@@ -38,7 +38,8 @@ impl Node for DegreeQuantizer {
 
                 let octave = degree / self.pitches.len();
                 let idx = degree % self.pitches.len();
-                self.cached_value = self.pitches[idx] * 2.0f32.powi(octave as i32) * SEMITONE.powi(root as i32);
+                self.cached_value =
+                    self.pitches[idx] * 2.0f32.powi(octave as i32) * SEMITONE.powi(root as i32);
             }
             *r = self.cached_value;
         }
@@ -48,11 +49,11 @@ impl Node for DegreeQuantizer {
 
     fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
         let mut new_pitches = vec![A0];
-        for n in parameters.split(" ") {
+        for n in parameters.split(' ') {
             let next_value = match n {
-                "W" => new_pitches[new_pitches.len()-1] * SEMITONE.powi(2),
-                "H" => new_pitches[new_pitches.len()-1] * SEMITONE,
-                _ => return Err(format!("Unknown interval {}", n))
+                "W" => new_pitches[new_pitches.len() - 1] * SEMITONE.powi(2),
+                "H" => new_pitches[new_pitches.len() - 1] * SEMITONE,
+                _ => return Err(format!("Unknown interval {}", n)),
             };
             new_pitches.push(next_value);
         }
@@ -71,7 +72,15 @@ mod quantizer_tests {
         // major scale
         quantizer.set_static_parameters("W W H W W W").unwrap();
 
-        for (degree, expected) in &[(0, 440.0), (1,  493.88), (2,  554.37), (3, 587.33), (4,  659.25), (5,  739.99), (6,  830.61)] {
+        for (degree, expected) in &[
+            (0, 440.0),
+            (1, 493.88),
+            (2, 554.37),
+            (3, 587.33),
+            (4, 659.25),
+            (5, 739.99),
+            (6, 830.61),
+        ] {
             // first degree, a as root
             let input = arr![[f32; BLOCK_SIZE]; [*degree as f32; BLOCK_SIZE], [0.0f32; BLOCK_SIZE]];
             let output = quantizer.process(input);
@@ -79,10 +88,16 @@ mod quantizer_tests {
                 assert!(output[0][i] - expected < 0.03);
             }
             // again up an octave
-            let input = arr![[f32; BLOCK_SIZE]; [*degree as f32 + 7.0; BLOCK_SIZE], [0.0f32; BLOCK_SIZE]];
+            let input =
+                arr![[f32; BLOCK_SIZE]; [*degree as f32 + 7.0; BLOCK_SIZE], [0.0f32; BLOCK_SIZE]];
             let output = quantizer.process(input);
             for i in 0..BLOCK_SIZE {
-                assert!(output[0][i] - expected*2.0 < 0.03, "Got {}, expected {}", output[0][i], expected*2.0);
+                assert!(
+                    output[0][i] - expected * 2.0 < 0.03,
+                    "Got {}, expected {}",
+                    output[0][i],
+                    expected * 2.0
+                );
             }
         }
     }
@@ -93,18 +108,38 @@ mod quantizer_tests {
         // natural minor scale
         quantizer.set_static_parameters("W H W W H W").unwrap();
 
-        for (degree, expected) in &[(0, 261.63), (1, 293.66), (2, 311.13), (3, 349.23), (4, 392.00), (5, 415.30), (6, 466.16)] {
+        for (degree, expected) in &[
+            (0, 261.63),
+            (1, 293.66),
+            (2, 311.13),
+            (3, 349.23),
+            (4, 392.00),
+            (5, 415.30),
+            (6, 466.16),
+        ] {
             // first degree, c as root
-            let input = arr![[f32; BLOCK_SIZE]; [*degree as f32; BLOCK_SIZE], [-9.0f32; BLOCK_SIZE]];
+            let input =
+                arr![[f32; BLOCK_SIZE]; [*degree as f32; BLOCK_SIZE], [-9.0f32; BLOCK_SIZE]];
             let output = quantizer.process(input);
             for i in 0..BLOCK_SIZE {
-                assert!(output[0][i] - expected < 0.03, "Got {}, expected {}", output[0][i], expected);
+                assert!(
+                    output[0][i] - expected < 0.03,
+                    "Got {}, expected {}",
+                    output[0][i],
+                    expected
+                );
             }
             // again up an octave
-            let input = arr![[f32; BLOCK_SIZE]; [*degree as f32 + 7.0; BLOCK_SIZE], [-9.0f32; BLOCK_SIZE]];
+            let input =
+                arr![[f32; BLOCK_SIZE]; [*degree as f32 + 7.0; BLOCK_SIZE], [-9.0f32; BLOCK_SIZE]];
             let output = quantizer.process(input);
             for i in 0..BLOCK_SIZE {
-                assert!(output[0][i] - expected*2.0 < 0.03, "Got {}, expected {}", output[0][i], expected*2.0);
+                assert!(
+                    output[0][i] - expected * 2.0 < 0.03,
+                    "Got {}, expected {}",
+                    output[0][i],
+                    expected * 2.0
+                );
             }
         }
     }

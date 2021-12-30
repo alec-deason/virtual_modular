@@ -16,7 +16,7 @@ impl Node for Log {
 
 #[derive(Copy, Clone, Default)]
 pub struct LogTrigger {
-    triggered: bool
+    triggered: bool,
 }
 
 impl Node for LogTrigger {
@@ -128,7 +128,7 @@ impl Node for Automation {
 #[derive(Copy, Clone)]
 pub struct RMS {
     mean_squared: f64,
-    decay: f64
+    decay: f64,
 }
 
 impl Default for RMS {
@@ -142,7 +142,7 @@ impl Default for RMS {
 
 impl RMS {
     pub fn tick(&mut self, sample: f64) -> f64 {
-        self.mean_squared = self.mean_squared * self.decay + (1.0-self.decay) * sample.powi(2);
+        self.mean_squared = self.mean_squared * self.decay + (1.0 - self.decay) * sample.powi(2);
         self.mean_squared.sqrt()
     }
 }
@@ -179,11 +179,9 @@ impl Compressor {
                 self.triggered = true;
                 self.time = 0.0;
             }
-        } else {
-            if self.triggered {
-                self.triggered = false;
-                self.time = (1.0-self.current) * attack;
-            }
+        } else if self.triggered {
+            self.triggered = false;
+            self.time = (1.0 - self.current) * attack;
         }
         let r = if self.triggered {
             if self.time < attack {
@@ -191,15 +189,13 @@ impl Compressor {
             } else {
                 1.0
             }
+        } else if self.time < decay {
+            1.0 - self.time / decay
         } else {
-            if self.time < decay {
-                1.0 - self.time / decay
-            } else {
-                0.0
-            }
+            0.0
         };
         self.current = self.current * 0.1 + r * 0.9;
-        10.0f64.powf((self.current*gain)/10.0)
+        10.0f64.powf((self.current * gain) / 10.0)
     }
 }
 
@@ -217,13 +213,18 @@ impl Node for Compressor {
 
         let mut r = [0.0f32; BLOCK_SIZE];
         for (i, r) in r.iter_mut().enumerate() {
-            *r = self.tick(attack[i] as f64, decay[i] as f64, threshold[i] as f64, gain[i] as f64, sample[i] as f64) as f32;
+            *r = self.tick(
+                attack[i] as f64,
+                decay[i] as f64,
+                threshold[i] as f64,
+                gain[i] as f64,
+                sample[i] as f64,
+            ) as f32;
         }
         arr![[f32; BLOCK_SIZE]; r]
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
-        self.per_sample = 1.0/rate as f64;
+        self.per_sample = 1.0 / rate as f64;
     }
 }
-

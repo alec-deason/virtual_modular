@@ -11,42 +11,6 @@ pub struct WaveTable {
     pub idx: f32,
 }
 impl WaveTable {
-    pub fn saw() -> Self {
-        let sz = 1024;
-        let mut table = vec![0.0; 1024];
-        let scale = 1.0;
-        let omega = 1.0 / sz as f32;
-
-        for (i, v) in table.iter_mut().enumerate() {
-            let mut amp = scale;
-            let mut x = 0.0;
-            let mut h = 1.0;
-            let mut dd;
-            let pd = i as f32 / sz as f32;
-            let mut hpd = pd;
-            loop {
-                if (omega * h) < 0.5 {
-                    dd = ((omega * h * std::f32::consts::PI).sin() * 0.5 * std::f32::consts::PI)
-                        .cos();
-                    x += amp * dd * (hpd * 2.0 * std::f32::consts::PI).sin();
-                    h += 1.0;
-                    hpd = pd * h;
-                    amp = scale / h;
-                } else {
-                    break;
-                }
-            }
-            *v = x;
-        }
-
-        Self {
-            len: table.len() as f32,
-            idx: thread_rng().gen_range(0.0..table.len() as f32),
-            table,
-            sample_rate: 0.0,
-        }
-    }
-
     pub fn noise() -> Self {
         let mut rng = StdRng::seed_from_u64(2);
         let table: Vec<f32> = (0..1024 * 1000).map(|_| rng.gen_range(-1.0..1.0)).collect();
@@ -85,72 +49,6 @@ impl Node for WaveTable {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.sample_rate = rate;
-    }
-}
-
-#[derive(Clone)]
-pub struct Sine {
-    phase: f64,
-    per_sample: f64,
-}
-
-impl Default for Sine {
-    fn default() -> Self {
-        Self {
-            phase: thread_rng().gen(),
-            per_sample: 1.0 / 44100.0,
-        }
-    }
-}
-
-impl Node for Sine {
-    type Input = U2;
-    type Output = U1;
-
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let freq = input[0];
-        let reset = input[1];
-
-        let mut r = [0.0; BLOCK_SIZE];
-        for (i, r) in r.iter_mut().enumerate() {
-            let v = (TAU as f64 * self.phase).sin();
-            if reset[i] > 0.5 {
-                self.phase = 0.0;
-            }
-            self.phase += self.per_sample * freq[i] as f64;
-            if self.phase > 1.0 {
-                self.phase -= 1.0;
-            }
-            *r = v as f32;
-        }
-
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.per_sample = 1.0 / rate as f64;
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct PositiveSine {
-    sine: Sine,
-}
-
-impl Node for PositiveSine {
-    type Input = U2;
-    type Output = U1;
-
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let mut r = self.sine.process(input);
-        r[0].iter_mut().for_each(|v| *v = *v * 0.5 + 0.5);
-        r
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.sine.set_sample_rate(rate);
     }
 }
 
@@ -200,44 +98,6 @@ impl Node for Noise {
     }
 }
 
-#[cfg(feature = "square")]
-#[derive(Clone)]
-pub struct SquareWave {
-    osc: hexodsp::dsp::helpers::PolyBlepOscillator,
-    per_sample: f32,
-}
-
-#[cfg(feature = "square")]
-impl Default for SquareWave {
-    fn default() -> Self {
-        Self {
-            osc: hexodsp::dsp::helpers::PolyBlepOscillator::new(0.0),
-            per_sample: 0.0,
-        }
-    }
-}
-
-#[cfg(feature = "square")]
-impl Node for SquareWave {
-    type Input = U2;
-    type Output = U1;
-    #[inline]
-    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (freq, pw) = (input[0], input[1]);
-        let mut r = [0.0; BLOCK_SIZE];
-        for (i, r) in r.iter_mut().enumerate() {
-            let freq = freq[i];
-            let pw = pw[i];
-            *r = self.osc.next_pulse(freq, self.per_sample, pw);
-        }
-        arr![[f32; BLOCK_SIZE]; r]
-    }
-
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.per_sample = 1.0 / rate;
-    }
-}
-
 // Based on: http://till.com/articles/sineshaper/
 #[derive(Copy, Clone)]
 pub struct TanhShaper {
@@ -269,8 +129,9 @@ impl Node for TanhShaper {
                 self.phase as f32 * 4.0 - 1.0
             } else {
                 (1.0 - self.phase as f32) * 4.0 - 1.0
-            } * std::f32::consts::PI * 0.5;
-            *r = 9.0*(0.3833*x).tanh() - 3.519*param[i]*x;
+            } * std::f32::consts::PI
+                * 0.5;
+            *r = 9.0 * (0.3833 * x).tanh() - 3.519 * param[i] * x;
             self.phase += self.per_sample * freq[i] as f64;
             while self.phase > 1.0 {
                 self.phase -= 1.0;
@@ -282,5 +143,111 @@ impl Node for TanhShaper {
 
     fn set_sample_rate(&mut self, rate: f32) {
         self.per_sample = 1.0 / rate as f64;
+    }
+}
+
+// Based on: http://www.martin-finke.de/blog/articles/audio-plugins-018-polyblep-oscillator/
+fn poly_blep(mut t: f64, dt: f64) -> f64 {
+    if t < dt {
+        t /= dt;
+        2.0 * t - t.powi(2) - 1.0
+    } else if t > 1.0 - dt {
+        t = (t - 1.0) / dt;
+        t.powi(2) + 2.0 * t + 1.0
+    } else {
+        0.0
+    }
+}
+
+macro_rules! oscillator {
+    ($name:ident, $aux_inputs:ty, $body:expr) => {
+        #[derive(Clone)]
+        pub struct $name {
+            phase: f64,
+            per_sample: f64,
+            previous: f64,
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self {
+                    phase: thread_rng().gen(),
+                    per_sample: 1.0 / 44100.0,
+                    previous: 0.0,
+                }
+            }
+        }
+
+        impl Node for $name {
+            type Input = <$aux_inputs as core::ops::Add<U1>>::Output;
+            type Output = U1;
+
+            #[inline]
+            fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+                let freq = input[0];
+
+                let mut r = [0.0; BLOCK_SIZE];
+                for (i, r) in r.iter_mut().enumerate() {
+                    let d = self.per_sample * freq[i] as f64;
+                    self.phase = (self.phase + d).fract();
+                    self.previous = $body(self.phase, d, &input, i, self.previous);
+                    *r = self.previous as f32;
+                }
+
+                arr![[f32; BLOCK_SIZE]; r]
+            }
+
+            fn set_sample_rate(&mut self, rate: f32) {
+                self.per_sample = 1.0 / rate as f64;
+            }
+        }
+    };
+}
+
+oscillator! {
+    SawWave,
+    U0,
+    |phase, delta, _input, _i, _previous| {
+        let r = 2.0 * phase - 1.0;
+        r - poly_blep(phase, delta)
+    }
+}
+
+oscillator! {
+    TriangleWave,
+    U0,
+    |phase, delta, _input, _i, previous| {
+        let mut r = if phase < 0.5 { 1.0 } else { -1.0 };
+        r += poly_blep(phase, delta);
+        r -= poly_blep((phase + 0.5).fract(), delta);
+        // FIXME: The amplitude of this oscillator is much lower than the others. Why?
+        delta * r + (1.0 - delta) * previous
+    }
+}
+
+oscillator! {
+    SquareWave,
+    U1,
+    |phase, delta, input:&Ports<U2>, i, _previous| {
+        let width = input[1][i] as f64;
+        let mut r = if phase < width { 1.0 } else { -1.0 };
+        r += poly_blep(phase, delta);
+        r - poly_blep((phase + (1.0-width)).fract(), delta)
+    }
+}
+
+oscillator! {
+    SineWave,
+    U0,
+    |phase:f64, _delta, _input, _i, _previous| {
+        (TAU as f64 * phase).sin()
+    }
+}
+
+oscillator! {
+    PositiveSineWave,
+    U0,
+    |phase:f64, _delta, _input, _i, _previous| {
+        (TAU as f64 * phase).sin() * 0.5 + 0.5
     }
 }

@@ -131,7 +131,7 @@ impl Node for ModablePingPong {
         let (len, sig_l, sig_r, feedback) = (input[0], input[1], input[2], input[3]);
         let mut left = [0.0; BLOCK_SIZE];
         let mut right = [0.0; BLOCK_SIZE];
-        for (i, (l,r)) in left.iter_mut().zip(&mut right).enumerate() {
+        for (i, (l, r)) in left.iter_mut().zip(&mut right).enumerate() {
             let len = len[i].max(0.000001) / 2.0;
             self.left.set_delay((len * self.rate) as f64);
             self.right.set_delay((len * self.rate) as f64);

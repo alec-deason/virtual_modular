@@ -128,7 +128,7 @@ impl Node for BurstTrigger {
         let trigger = input[0];
         let count = input[1];
         let spacing = input[2];
-        let mut r = <Ports<Self::Output> >::default();
+        let mut r = <Ports<Self::Output>>::default();
         for i in 0..BLOCK_SIZE {
             if self.remaining > 0 {
                 self.clock += self.per_sample;
@@ -156,6 +156,6 @@ impl Node for BurstTrigger {
     }
 
     fn set_sample_rate(&mut self, rate: f32) {
-        self.per_sample = 1.0/rate as f64;
+        self.per_sample = 1.0 / rate as f64;
     }
 }

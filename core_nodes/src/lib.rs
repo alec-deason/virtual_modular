@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use generic_array::{arr, typenum::*};
-use virtual_modular_graph::{Node, Ports, BLOCK_SIZE, NodeTemplate};
+use std::collections::HashMap;
+use virtual_modular_graph::{Node, NodeTemplate, Ports, BLOCK_SIZE};
 
 #[cfg(feature = "abc")]
 pub mod abc;
@@ -83,10 +83,12 @@ node_templates! {
         Compressor: Compressor::default(),
         CXor: CXor,
         Comp: Comparator,
-        Sine: Sine::default(),
+        Sine: SineWave::default(),
+        Triangle: TriangleWave::default(),
+        Square: SquareWave::default(),
         TanhShaper: TanhShaper::default(),
-        Psine: PositiveSine::default(),
-        Saw: WaveTable::saw(),
+        Psine: PositiveSineWave::default(),
+        Saw: SawWave::default(),
         PulseOnLoad: PulseOnLoad::default(),
         Noise: Noise::default(),
         PNoise: Noise::positive(),
@@ -142,7 +144,7 @@ node_templates! {
 }
 
 #[derive(Clone)]
-pub struct FnNode<A:Clone, R:Clone>(R, std::marker::PhantomData<A>);
+pub struct FnNode<A: Clone, R: Clone>(R, std::marker::PhantomData<A>);
 impl<A: Clone, R: FnMut(A) -> f32 + Clone> FnNode<A, R> {
     pub fn new(func: R) -> Self {
         Self(func, Default::default())

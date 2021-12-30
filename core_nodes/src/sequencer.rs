@@ -484,7 +484,7 @@ impl Default for NCube {
         let width = 40;
         let mut rng = thread_rng();
         let mut s = Self {
-            data: (0..width*width*16).map(|_| rng.gen()).collect(),
+            data: (0..width * width * 16).map(|_| rng.gen()).collect(),
             width,
             cache: Default::default(),
             a: 0.0,
@@ -502,10 +502,10 @@ impl NCube {
         let x = self.a.cos() * self.r;
         let y = self.a.sin() * self.r;
 
-        let x_l = (x.ceil() - x)/(x.ceil() - x.floor());
-        let x_r = (x - x.floor())/(x.ceil() - x.floor());
-        let y_l = (y.ceil() - y)/(y.ceil() - y.floor());
-        let y_r = (y - y.floor())/(y.ceil() - y.floor());
+        let x_l = (x.ceil() - x) / (x.ceil() - x.floor());
+        let x_r = (x - x.floor()) / (x.ceil() - x.floor());
+        let y_l = (y.ceil() - y) / (y.ceil() - y.floor());
+        let y_r = (y - y.floor()) / (y.ceil() - y.floor());
         let len = self.cache.len();
 
         for i in 0..len {
@@ -514,14 +514,12 @@ impl NCube {
             let c = self.data[(x.ceil() as usize + y.ceil() as usize * self.width) * len + i];
             let d = self.data[(x.floor() as usize + y.ceil() as usize * self.width) * len + i];
 
-
             let l = x_l * a + x_r * b;
             let h = x_l * d + x_r * c;
             self.cache[i] = y_l * l + y_r * h;
         }
     }
 }
-
 
 impl Node for NCube {
     type Input = U2;
@@ -530,7 +528,7 @@ impl Node for NCube {
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let trigger = input[0];
         let radius = input[1];
-        let mut r = <Ports<Self::Output> >::default();
+        let mut r = <Ports<Self::Output>>::default();
         for i in 0..BLOCK_SIZE {
             if trigger[i] > 0.5 {
                 if !self.triggered {
@@ -547,7 +545,8 @@ impl Node for NCube {
         r
     }
 
-    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+    fn set_static_parameters(&mut self, _parameters: &str) -> Result<(), String> {
+        //TODO: actual code
         Ok(())
     }
 }
@@ -559,14 +558,13 @@ pub struct StepSequencer {
     triggered: bool,
 }
 
-
 impl Node for StepSequencer {
     type Input = U1;
     type Output = U1;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let trigger = input[0];
-        let mut r = <Ports<Self::Output> >::default();
+        let mut r = <Ports<Self::Output>>::default();
         for (i, r) in r[0].iter_mut().enumerate() {
             if trigger[i] > 0.5 {
                 if !self.triggered {
@@ -582,8 +580,11 @@ impl Node for StepSequencer {
     }
 
     fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
-        self.steps = parameters.split_terminator(' ').filter_map(|v| v.parse::<f32>().ok()).collect();
-        self.idx = self.idx % self.steps.len();
+        self.steps = parameters
+            .split_terminator(' ')
+            .filter_map(|v| v.parse::<f32>().ok())
+            .collect();
+        self.idx %= self.steps.len();
         Ok(())
     }
 }
@@ -602,28 +603,35 @@ pub struct Choice {
     triggered: bool,
 }
 
-
 impl Node for Choice {
     type Input = U1;
     type Output = U2;
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
         let trigger = input[0];
-        let mut r = <Ports<Self::Output> >::default();
-        for i in 0..BLOCK_SIZE {
-            if trigger[i] > 0.5 {
+        let mut r = <Ports<Self::Output>>::default();
+        let (r0, r1) = r.split_at_mut(1);
+        for ((r0, r1), trigger) in r0[0].iter_mut().zip(&mut r1[0]).zip(&trigger) {
+            if *trigger > 0.5 {
                 if !self.triggered {
                     self.triggered = true;
                     let mut rng = thread_rng();
-                    let i = self.options.choose_weighted(&mut rng, |i| i.selection_probability).unwrap();
+                    let i = self
+                        .options
+                        .choose_weighted(&mut rng, |i| i.selection_probability)
+                        .unwrap();
                     self.current = i.value;
-                    self.firing = if i.firing_probability > rng.gen() { 1.0 } else { 0.0 };
+                    self.firing = if i.firing_probability > rng.gen() {
+                        1.0
+                    } else {
+                        0.0
+                    };
                 }
             } else {
                 self.triggered = false;
             }
-            r[0][i] = self.current;
-            r[1][i] = self.firing;
+            *r0 = self.current;
+            *r1 = self.firing;
         }
         r
     }
@@ -650,13 +658,13 @@ fn parse_choices(data: &str) -> Result<Vec<ChoiceItem>, String> {
             .name("number")
     }
     fn item<'a>() -> Parser<'a, u8, ChoiceItem> {
-        (number() - sym(b'|') + number() + (sym(b'|') * number()).opt()).map(|((value, selection_probability), firing_probability)| {
-            ChoiceItem {
+        (number() - sym(b'|') + number() + (sym(b'|') * number()).opt()).map(
+            |((value, selection_probability), firing_probability)| ChoiceItem {
                 value,
                 selection_probability,
-                firing_probability: firing_probability.unwrap_or(1.0)
-            }
-        })
+                firing_probability: firing_probability.unwrap_or(1.0),
+            },
+        )
     }
     let parsed = list(item(), sym(b' ').repeat(1..))
         .parse(data.as_bytes())
