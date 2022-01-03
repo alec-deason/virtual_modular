@@ -1,36 +1,292 @@
 use generic_array::{arr, typenum::*};
 use std::f32::consts::PI;
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
+use crate::{DelayLine, utils::make_coprime};
 
-#[derive(Copy, Clone, Default)]
-pub struct AllPass(f32, f32);
+#[derive(Clone, Default)]
+pub struct AllPass {
+    delay: DelayLine,
+    pub gain: f64,
+    rate: f64,
+}
 
 impl AllPass {
-    pub fn tick(&mut self, scale: f32, signal: f32) -> f32 {
-        let v = scale * signal + self.0 - scale * self.1;
-        self.0 = signal;
-        self.1 = v;
+    pub fn new(gain: f64, delay: f64) -> Self {
+        let mut line = DelayLine::default();
+        line.set_delay(delay);
+        Self {
+            delay: line,
+            gain,
+            rate: 48000.0,
+        }
+    }
+
+    pub fn set_delay(&mut self, delay: f64) {
+        self.delay.set_delay(delay);
+    }
+
+    pub fn tick(&mut self, signal: f64) -> f64 {
+        let v = -self.gain * signal + self.delay.current();
+        self.delay.tick(signal + self.gain * v);
         v
     }
 }
 
 impl Node for AllPass {
-    type Input = U2;
+    type Input = U3;
     type Output = U1;
 
     #[inline]
     fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
-        let (scale, signal) = (input[0], input[1]);
-        let mut r = [0.0; BLOCK_SIZE];
-        for i in 0..BLOCK_SIZE {
-            let scale = scale[i];
-            let signal = signal[i];
-            r[i] = self.tick(scale, signal);
+        let (scale, signal, delay) = (input[0], input[1], input[2]);
+        let mut r = <Ports<Self::Output> >::default();
+        for (i, r) in r[0].iter_mut().enumerate() {
+            self.gain = scale[i] as f64;
+            self.set_delay(delay[i] as f64 * self.rate);
+            let signal = signal[i] as f64;
+            *r = self.tick(signal) as f32;
         }
-        arr![[f32; BLOCK_SIZE]; r]
+        r
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.rate = rate as f64;
     }
 }
 
+#[derive(Clone, Default)]
+pub struct Comb {
+    delay: DelayLine,
+    pub gain: f64,
+    rate: f64,
+}
+
+impl Comb {
+    pub fn new(gain: f64, delay: f64) -> Self {
+        let mut line = DelayLine::default();
+        line.set_delay(delay);
+        Self {
+            delay: line,
+            gain,
+            rate: 48000.0,
+        }
+    }
+
+    pub fn set_delay(&mut self, delay: f64) {
+        self.delay.set_delay(delay);
+    }
+
+    pub fn tick(&mut self, signal: f64) -> f64 {
+        let v = signal + self.gain*self.delay.current();
+        self.delay.tick(v);
+        v
+    }
+}
+
+impl Node for Comb {
+    type Input = U3;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (scale, signal, delay) = (input[0], input[1], input[2]);
+        let mut r = <Ports<Self::Output> >::default();
+        for (i, r) in r[0].iter_mut().enumerate() {
+            self.gain = scale[i] as f64;
+            self.set_delay(delay[i] as f64 * self.rate);
+            let signal = signal[i] as f64;
+            *r = self.tick(signal) as f32;
+        }
+        r
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.rate = rate as f64;
+    }
+}
+
+//TODO: unify with the main comb filter implementation
+#[derive(Clone, Default)]
+pub struct LPComb {
+    delay: DelayLine,
+    filter: OnePole,
+    pub gain: f64,
+}
+
+impl LPComb {
+    pub fn new(gain: f64, damping: f64, delay: f64) -> Self {
+        let mut line = DelayLine::default();
+        line.set_delay(delay);
+        Self {
+            delay: line,
+            filter: OnePole::new(1.0 - damping, -damping),
+            gain,
+        }
+    }
+
+    pub fn set_delay(&mut self, delay: f64) {
+        self.delay.set_delay(delay);
+    }
+
+    pub fn tick(&mut self, signal: f64) -> f64 {
+        let v = signal + self.gain*self.filter.tick(self.delay.current());
+        self.delay.tick(v);
+        v
+    }
+}
+
+impl Node for LPComb {
+    type Input = U3;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let (scale, signal, delay) = (input[0], input[1], input[2]);
+        let mut r = <Ports<Self::Output> >::default();
+        for (i, r) in r[0].iter_mut().enumerate() {
+            self.gain = scale[i] as f64;
+            self.set_delay(delay[i] as f64);
+            let signal = signal[i] as f64;
+            *r = self.tick(signal) as f32;
+        }
+        r
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ParallelCombs {
+    combs: Vec<(f64, Comb)>,
+    rate: f64,
+}
+
+impl Node for ParallelCombs {
+    type Input = U1;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let signal = input[0];
+        let mut r = <Ports<Self::Output> >::default();
+        for (i, r) in r[0].iter_mut().enumerate() {
+            let signal = signal[i] as f64;
+            for (_, comb) in &mut self.combs {
+                *r += comb.tick(signal) as f32;
+            }
+        }
+        r
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.rate = rate as f64;
+        let mut delays:Vec<_> = self.combs.iter().map(|(d, _)| (d*self.rate) as u32).collect()
+ ;
+        make_coprime(&mut delays);
+        for (d, (_, comb)) in delays.iter().zip(&mut self.combs) {
+            comb.set_delay(*d as f64);
+        }
+    }
+
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        self.combs = parse_combs(parameters)?;
+        self.set_sample_rate(self.rate as f32);
+        Ok(())
+    }
+}
+
+fn parse_combs(data: &str) -> Result<Vec<(f64, Comb)>, String> {
+    use pom::parser::Parser;
+    use pom::parser::*;
+    use std::str::{self, FromStr};
+    fn number<'a>() -> Parser<'a, u8, f64> {
+        let integer = one_of(b"0123456789").repeat(0..);
+        let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
+        let exp = one_of(b"eE") + one_of(b"+-").opt() + one_of(b"0123456789").repeat(1..);
+        let number = sym(b'-').opt() + integer + frac.opt() + exp.opt();
+        number
+            .collect()
+            .convert(str::from_utf8)
+            .convert(f64::from_str)
+            .name("number")
+    }
+    fn whitespace<'a>() -> Parser<'a, u8, Vec<u8>> {
+        sym(b' ').repeat(0..).name("whitespace")
+    }
+    fn item<'a>() -> Parser<'a, u8, (f64, Comb)> {
+        (sym(b'(') * whitespace() * number() - whitespace() - sym(b',') - whitespace() + number() - whitespace() - sym(b')')).map(|(gain, delay)| (delay, Comb::new(gain, delay)))
+    }
+    let parsed = list(item(), whitespace())
+        .parse(data.as_bytes())
+        .map_err(|e| format!("{:?}", e));
+    parsed
+}
+
+#[derive(Clone, Default)]
+pub struct SerialAllPasses {
+    all_passes: Vec<(f64, AllPass)>,
+    rate: f64,
+}
+
+impl Node for SerialAllPasses {
+    type Input = U1;
+    type Output = U1;
+
+    #[inline]
+    fn process(&mut self, input: Ports<Self::Input>) -> Ports<Self::Output> {
+        let signal = input[0];
+        let mut r = <Ports<Self::Output> >::default();
+        for (i, r) in r[0].iter_mut().enumerate() {
+            let mut signal = signal[i] as f64;
+            for (_, all_pass) in &mut self.all_passes {
+                signal  = all_pass.tick(signal);
+            }
+            *r = signal as f32;
+        }
+        r
+    }
+
+    fn set_sample_rate(&mut self, rate: f32) {
+        self.rate = rate as f64;
+        let mut delays:Vec<_> = self.all_passes.iter().map(|(d, _)| (d*self.rate) as u32).collect()
+ ;
+        make_coprime(&mut delays);
+        for (d, (_, all_pass)) in delays.iter().zip(&mut self.all_passes) {
+            all_pass.set_delay(*d as f64);
+        }
+    }
+
+    fn set_static_parameters(&mut self, parameters: &str) -> Result<(), String> {
+        self.all_passes = parse_allpass(parameters)?;
+        self.set_sample_rate(self.rate as f32);
+        Ok(())
+    }
+}
+
+fn parse_allpass(data: &str) -> Result<Vec<(f64, AllPass)>, String> {
+    use pom::parser::Parser;
+    use pom::parser::*;
+    use std::str::{self, FromStr};
+    fn number<'a>() -> Parser<'a, u8, f64> {
+        let integer = one_of(b"0123456789").repeat(0..);
+        let frac = sym(b'.') + one_of(b"0123456789").repeat(1..);
+        let exp = one_of(b"eE") + one_of(b"+-").opt() + one_of(b"0123456789").repeat(1..);
+        let number = sym(b'-').opt() + integer + frac.opt() + exp.opt();
+        number
+            .collect()
+            .convert(str::from_utf8)
+            .convert(f64::from_str)
+            .name("number")
+    }
+    fn whitespace<'a>() -> Parser<'a, u8, Vec<u8>> {
+        sym(b' ').repeat(0..).name("whitespace")
+    }
+    fn item<'a>() -> Parser<'a, u8, (f64, AllPass)> {
+        (sym(b'(') * whitespace() * number() - whitespace() - sym(b',') - whitespace() + number() - whitespace() - sym(b')')).map(|(gain, delay)| (delay, AllPass::new(gain, delay)))
+    }
+    let parsed = list(item(), whitespace())
+        .parse(data.as_bytes())
+        .map_err(|e| format!("{:?}", e));
+    parsed
+}
 // Based on https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf
 #[derive(Copy, Clone, Default)]
 pub struct Simper {

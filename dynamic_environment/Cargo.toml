@@ -20,3 +20,7 @@ ringbuf = "0.2.5"
 cpal = "0.13.3"
 wmidi = { version = "4.0.6", optional = true }
 jack = { version = "0.7.1", optional = true }
+
+
+[profile.release]
+incremental = true

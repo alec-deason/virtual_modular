@@ -2,6 +2,7 @@ use generic_array::{arr, typenum::*};
 use std::collections::HashMap;
 use virtual_modular_graph::{Node, NodeTemplate, Ports, BLOCK_SIZE};
 
+pub mod utils;
 #[cfg(feature = "abc")]
 pub mod abc;
 pub mod clock;
@@ -96,6 +97,11 @@ node_templates! {
         Adsr: ADSREnvelope::default(),
         QImp: QuantizedImpulse::default(),
         AllPass: AllPass::default(),
+        Comb: Comb::default(),
+        ParallelCombs: ParallelCombs::default(),
+        SerialAllPasses: SerialAllPasses::default(),
+        Diffusor: Diffusor::new(0.06, &mut rand::thread_rng()),
+        Reverb2: Reverb2::default(),
         Sh: SampleAndHold::default(),
         Pd: PulseDivider::default(),
         Log: Log,
@@ -112,7 +118,7 @@ node_templates! {
         Bp: SimperBandPass::default(),
         Toggle: Toggle::default(),
         Slew: Slew::default(),
-        Reverb: Reverb::default(),
+        Reverb: Reverb::poop(),
         Delay: ModableDelay::default(),
         PingPong: ModablePingPong::default(),
         Bg: BernoulliGate::default(),
