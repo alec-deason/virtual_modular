@@ -1,6 +1,6 @@
 use generic_array::{arr, typenum::*};
 use rand::prelude::*;
-use std::f32::consts::TAU;
+use std::f64::consts::{TAU, PI};
 use virtual_modular_graph::{Node, Ports, BLOCK_SIZE};
 
 #[derive(Clone)]

@@ -21,6 +21,7 @@ pub mod topological;
 #[cfg(feature = "tuning")]
 pub mod tuning;
 pub mod waveguide;
+pub mod goblin;
 
 pub use clock::*;
 pub use computation::*;
@@ -36,6 +37,7 @@ pub use randomization::*;
 pub use sequencer::*;
 pub use topological::*;
 pub use waveguide::*;
+pub use goblin::*;
 
 #[macro_export]
 macro_rules! node_templates {
@@ -145,7 +147,9 @@ node_templates! {
         PennyWhistle: PennyWhistle::default(),
         StereoIdentity: StereoIdentity,
         StringBodyFilter: StringBodyFilter::default(),
-        Constant: Constant::default()
+        Constant: Constant::default(),
+        TapScale: TapScale::default(),
+        RegisterSequence: RegisterSequence::default()
     }
 }
 

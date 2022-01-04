@@ -29,3 +29,25 @@ pub fn make_coprime(numbers: &mut [u32]) {
         }
     }
 }
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct SchmittTrigger {
+    triggered: bool
+}
+
+impl SchmittTrigger {
+    #[inline]
+    pub fn tick(&mut self, trigger: f64) -> bool {
+        if trigger > 0.5 {
+            if !self.triggered {
+                self.triggered = true;
+                true
+            } else {
+                false
+            }
+        } else {
+            self.triggered = false;
+            false
+        }
+    }
+}
